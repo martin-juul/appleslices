@@ -27,6 +27,7 @@ Design phase.
 - [Design document](docs/DESIGN.md) — architecture, platform matrix, distribution, security model, roadmap
 - [Package format specification](docs/PACKAGE-FORMAT.md) — `package.toml` schema, dependency semantics, versioning, lock files, build API
 - [Homebrew comparison & gap review](docs/HOMEBREW-REVIEW.md) — feature-by-feature review against Homebrew 7.0, what's missing, and proposed spec amendments
+- [Build infrastructure](docs/BUILD-INFRA.md) — the build farm and the `aslice build` / `aslice farm` harness: one pipeline that runs identically on the farm and on any user's Mac
 
 ## Scope
 
