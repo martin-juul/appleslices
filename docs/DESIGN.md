@@ -2,8 +2,8 @@
 
 **Name.** *aslice* — an apple slice: a nod to the Macintosh apple and to the shape of the project itself. Binary packages are **slices**; formula repositories are **orchards**; the manager picks slices off the orchard, prebuilt or baked to order. The vocabulary is deliberately distinct from Homebrew's beer terminology to avoid community confusion and trademark friction. The project name is styled lowercase everywhere, including sentence starts — like the command.
 
-- **Status:** Design draft, v0.3 — September 2026
-- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support). v0.3 resolves open question #4: **aslice collects no telemetry or analytics of any kind, ever** — the project is infrastructure, not a product (§2.2 N7, §9.4, §15)
+- **Status:** Design draft, v0.4 — September 2026
+- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support). v0.3 resolves open question #4: **aslice collects no telemetry or analytics of any kind, ever** — the project is infrastructure, not a product (§2.2 N7, §9.4, §15). v0.4 sharpens it: **download counts are rejected as a value signal too** — on a deprecated-OS platform, obscure ≠ low-value (§9.4)
 - **Scope:** macOS 10.11 (El Capitan) through 12 (Monterey), Intel x86_64 only
 - **Implementation:** C++20 core, single self-contained binary
 - **Audience:** Maintainers, founding contributors, and early reviewers
@@ -422,7 +422,11 @@ Estimated launch cost: under US$3,000 of used hardware plus power. This is the e
 
 - **Core orchard (~300 packages):** all three flavors where the formula's `min_os` allows (§4.1), default variants — the shell/git/curl/python/openssl/ffmpeg stratum.
 - **Extended orchard (~2,000 packages):** all flavors compatible with each formula's `min_os` floor, default variants, built on a rolling cadence.
-- **Popular non-default variants:** a small allowlist (e.g., `ffmpeg+x265+svt-av1`, `python+debug`) per flavor, chosen by maintainer judgment and community demand (orchard issues, request threads), informed only by the public aggregate download counts the hosting platform exposes anyway. There is no client-side signal — aslice collects no telemetry (§2.2 N7), so the system learns what to prebuild by *asking the community*, never by watching it.
+- **Popular non-default variants and prebuild priorities:** chosen by *value to a stranded platform*, never by volume. Download counts are explicitly rejected as a signal: on a deprecated-OS ecosystem, an obscure library fetched once a month may be irreplaceable — nobody else ships it for these machines — while a popular tool has alternatives everywhere. The prioritization inputs are all knowable without watching a single user:
+  - **Dependency centrality** — how much of the orchard's build graph a package unblocks, computed from the graph itself.
+  - **Build pain** — farm-measured compile time and patch/failure rate: the hours a prebuilt slice saves each of its users, however few they are.
+  - **Irreplaceability** — upstream has dropped these OSes and Homebrew's bottles are frozen; if aslice doesn't ship it, it effectively doesn't exist for this platform.
+  - **Direct community requests** — orchard issues and request threads, in the open.
 - Everything else: source builds, with the ABI contract guaranteeing the result still interops with the prebuilt world.
 
 ### 9.5 Build provenance
@@ -609,7 +613,7 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 1. Default prefix (`/opt/aslice` vs `~/.aslice`-first). The name itself is settled: **aslice**.
 2. Starlark vs. a stricter pure-TOML-with-templates build DSL (Starlark chosen for expressiveness with hermeticity; the debate is real).
 3. Whether `abi = false` user-flag builds should share store paths with farm builds (current: yes, identity is identical — but provenance diverges; review wanted).
-4. ~~Telemetry~~ — **resolved (v0.3): aslice collects no telemetry or analytics of any kind, ever.** No install IDs, no opt-in counters, no phone-home, no crash reporting. The project is infrastructure, not a product, and its users — many on air-gapped audio rigs and lab machines — owe it no data. Prebuild prioritization (§9.4) runs on maintainer judgment, community requests, and the public aggregate download counts the hosting platform exposes regardless. This is a charter-level commitment, not a tunable.
+4. ~~Telemetry~~ — **resolved (v0.3, sharpened v0.4): aslice collects no telemetry or analytics of any kind, ever.** No install IDs, no opt-in counters, no phone-home, no crash reporting — and no download-count-driven prioritization either, because volume mismeasures value on a platform where the rarest dependency may be the most irreplaceable (§9.4). The project is infrastructure, not a product, and its users — many on air-gapped audio rigs and lab machines — owe it no data. This is a charter-level commitment, not a tunable.
 
 ---
 

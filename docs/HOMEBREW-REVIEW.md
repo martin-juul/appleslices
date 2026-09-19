@@ -285,7 +285,7 @@ Semantics: **active → deprecated** (installs warn, `audit`/`info` surface it) 
 | `uses_from_macos` (lean on system libs to dedupe) | **Rejected, codified** | On 10.11 the system libs are the problem (OpenSSL 0.9.8-era). Lint rule: runtime deps resolve to aslice packages only; exceptions are *frameworks* (Accelerate, SystemConfiguration, CoreAudio…) enumerated in an allowlist, never `/usr/lib` dylibs or `/usr/bin` tools. The Accelerate-shim BLAS provider example already assumes this — write it down as policy |
 | keg-only as a post-hoc hack | Rejected; replaced by principled `link = false` (§4.5) | Store-path dependency resolution makes "unlinked but depended upon" natural |
 | Auto-update on every command | Rejected | Staleness policy + `doctor` warnings instead (§4.13) |
-| Opt-out analytics | Rejected, absolutely | **No telemetry or analytics of any kind, ever — not even opt-in** (DESIGN §2.2 N7). The project is not a product; prebuild prioritization runs on maintainer judgment, community requests, and the public aggregate download counts the host exposes regardless |
+| Opt-out analytics | Rejected, absolutely | **No telemetry or analytics of any kind, ever — not even opt-in** (DESIGN §2.2 N7). The project is not a product; prebuild prioritization runs on dependency centrality, build pain, irreplaceability, and direct community requests — never on usage volume, which mismeasures value on a legacy platform where the rarest library may be the one nobody else ships |
 | HEAD builds in core | Rejected | Reproducibility and the lock model both depend on pins; third-party orchards may do what they like under their own trust level |
 | `/usr/local` ownership, sudo in steady state | Rejected (already) | — |
 | Casks at launch | Deferred (already N3) | The declarative `.app` reservation (§12.4) is the right shape when the time comes |
@@ -345,7 +345,7 @@ Concrete deltas this review proposes to the two specifications:
 - §13.4: add merge-gate specifics (matrix, ABI gate, dependent-rebuild cascade) — §4.7; project hygiene docs — §4.12.
 - §14 roadmap: move self-update + livecheck/autobump into Phase 0/1 — §7.
 - §15: new risks — §6.
-- Open questions: #4 (telemetry) is **resolved in v0.3** — no telemetry or analytics of any kind, ever; §9.4's prebuild-prioritization signal is replaced by community requests and public host-side download aggregates.
+- Open questions: #4 (telemetry) is **resolved (v0.3, sharpened v0.4)** — no telemetry or analytics of any kind, ever, and no download-count-driven prioritization; §9.4's prebuild signal is dependency centrality, build pain, irreplaceability, and community requests.
 
 **New document to commission:** `docs/ORCHARD-POLICY.md` — the maintainer-facing rulebook (acceptance bar, variant discipline, deprecation lifecycle, patch documentation, merge gates, release cadence). Homebrew scattered this across dozens of docs pages and tribal knowledge; aslice can fit it in one file while the project is young.
 
