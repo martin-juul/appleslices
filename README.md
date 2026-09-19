@@ -8,6 +8,7 @@ A successor-in-spirit to Homebrew for the platform Homebrew is leaving behind:
 - **User-selectable build flags and variants** — compile your own without losing interoperability with the prebuilt world (ABI-aware substitution)
 - **A stronger security model** — declarative formulae, sandboxed builds, TUF-signed metadata, code-free binary installs, no sudo in steady state
 - **A stronger performance model** — single C++20 binary, sub-10ms startup, parallel solver and downloads, zstd payloads, atomic rollback-capable generations
+- **No telemetry, ever** — aslice collects no metrics or analytics of any kind; it is infrastructure, not a product
 
 ## Vocabulary
 
