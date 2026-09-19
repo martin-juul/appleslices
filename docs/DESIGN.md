@@ -2,8 +2,9 @@
 
 **Name.** *aslice* — an apple slice: a nod to the Macintosh apple and to the shape of the project itself. Binary packages are **slices**; formula repositories are **orchards**; the manager picks slices off the orchard, prebuilt or baked to order. The vocabulary is deliberately distinct from Homebrew's beer terminology to avoid community confusion and trademark friction. The project name is styled lowercase everywhere, including sentence starts — like the command.
 
-- **Status:** Design draft, v0.1 — September 2026
-- **Scope:** macOS 10.15 (Catalina) through 12 (Monterey), Intel x86_64 only
+- **Status:** Design draft, v0.2 — September 2026
+- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support)
+- **Scope:** macOS 10.11 (El Capitan) through 12 (Monterey), Intel x86_64 only
 - **Implementation:** C++20 core, single self-contained binary
 - **Audience:** Maintainers, founding contributors, and early reviewers
 
@@ -20,7 +21,7 @@ The Intel-Mac package-management ecosystem is losing its maintainer on a known s
 - **Autumn 2027:** GitHub Actions retires its Intel macOS runners (`macos-13` images), eliminating the last hosted CI capable of natively building x86_64 macOS binaries. This is one of the explicit reasons Homebrew cites for its exit.
 - **Apple:** macOS 26 Tahoe is the final release for Intel Macs; macOS 27 Golden Gate is Apple-silicon-only. Intel Macs receive security updates only, on a countdown.
 
-Meanwhile a large installed base remains: Homebrew's own analytics, discussed publicly in mid-2026, put Intel at roughly a quarter of active Homebrew Mac installations. Catalina, Big Sur, and Monterey are precisely the releases these machines are stranded on — and precisely the window Homebrew has already abandoned.
+Meanwhile a large installed base remains: Homebrew's own analytics, discussed publicly in mid-2026, put Intel at roughly a quarter of active Homebrew Mac installations. Everything from El Capitan to Monterey is now outside Homebrew's support window — and precisely where these machines are stranded.
 
 ### 1.2 Who the users are
 
@@ -28,7 +29,7 @@ Three populations, all underserved:
 
 1. **Owners of 2012–2020 Intel Macs** used as daily drivers, home servers, audio rigs, and build machines. Many are maxed-out machines (Mac Pro 2013, iMac 5K, 16" MBP 2019) that remain genuinely capable.
 2. **CI and legacy-maintenance shops** that must keep building and testing x86_64 macOS software through Tahoe's support window.
-3. **OpenEmu / retro / audio / lab environments** pinned to old macOS releases for driver or 32-bit-adjacent reasons (Catalina is the first 64-bit-only release and the last before Big Sur's dyld-cache changes broke some workflows).
+3. **Retro, audio, lab, and 32-bit-dependent environments** pinned to older releases. Catalina dropped 32-bit app support entirely; 10.11–10.14 are the last releases that run 32-bit software, classic audio drivers, and legacy pro tools — which is exactly why their users stay. Today these users are served only by MacPorts' best-effort legacy coverage.
 
 ### 1.3 Why not MacPorts or Nix?
 
@@ -36,7 +37,7 @@ Both are suggested by Homebrew itself as migration paths. Both leave the opening
 
 | | MacPorts | Nix (via Determinate/nixpkgs) |
 |---|---|---|
-| Binary coverage for 10.15–12 Intel | Partial, shrinking; builds from source as the norm | x86_64-darwin support degrading; Hydra builds for old OS releases not a goal |
+| Binary coverage for 10.11–12 Intel | Partial, shrinking; builds from source as the norm | x86_64-darwin support degrading; Hydra builds for old OS releases not a goal |
 | Variant/flag model | Excellent (`+variants`) — but every variant is a local compile | Binary cache keyed on exact derivation; any flag change = full local rebuild |
 | UX | Functional but austere | Steep learning curve |
 | Philosophy | Build on the *target* OS version | Hermetic, prefix-independent |
@@ -55,8 +56,8 @@ Each clause is developed in its own section below.
 
 ### 2.1 Goals
 
-- **G1 — Full coverage of macOS 10.15, 11, and 12 on Intel**, treated as first-class citizens, not legacy tiers.
-- **G2 — Two µarch flavors:** `v2` (baseline: SSE4.2/POPCNT — every CPU that can run Catalina) and `v3` (AVX2 — Haswell and later). See §4.
+- **G1 — Full coverage of macOS 10.11 through 12 on Intel**, treated as first-class citizens, not legacy tiers.
+- **G2 — Three µarch flavors:** `v1` (SSE2 baseline — every 64-bit Intel Mac), `v2` (SSE4.2/POPCNT), and `v3` (AVX2 — Haswell and later). See §4.
 - **G3 — Precompiled binaries for the common flavors**, hosted on GitHub infrastructure with a mirror-friendly fallback. Default install path is binary and near-instant.
 - **G4 — User-selectable build flags and feature variants** with local compilation — *without* forfeiting interoperability with prebuilt packages (§7).
 - **G5 — A materially better security model than Homebrew's** (§10): declarative package definitions, sandboxed builds, signed everything, code-free binary installs, no `/usr/local` chown, no sudo in steady state.
@@ -67,10 +68,11 @@ Each clause is developed in its own section below.
 ### 2.2 Non-goals
 
 - **N1 — Apple Silicon.** Not now, not by accident. The architecture must not preclude it, but no engineering effort goes to it. Homebrew owns that space.
-- **N2 — macOS 13+ on Intel.** Tahoe-era Intel machines (2019–2020) are welcome, but the build targets remain 10.15–12; Ventura+ Intel gets whatever falls out naturally.
+- **N2 — macOS 13+ on Intel.** Tahoe-era Intel machines (2019–2020) are welcome, but the build targets remain 10.11–12; Ventura+ Intel gets whatever falls out naturally.
 - **N3 — GUI applications (Casks) at launch.** A declarative app-install format is designed (§12.4) but core packages come first.
 - **N4 — Linux/Windows.** The codebase should stay portable, but no effort is spent there.
 - **N5 — Replacing the system.** aslice never touches `/usr`, `/System`, or `/usr/local`'s ownership. It lives in its own prefix.
+- **N6 — 32-bit (i386).** Every Mac that can run 10.11 is 64-bit capable, so slices are x86_64-only. The 32-bit software that keeps many users on ≤10.14 is out of scope for the manager itself — aslice manages their 64-bit toolchain, not their legacy apps.
 
 ---
 
@@ -91,44 +93,44 @@ Homebrew's structural constraints — not its maintainers — produced its weakn
 
 ## 4. Platform Matrix and Microarchitecture Strategy
 
-### 4.1 The OS axis collapses
+### 4.1 The OS axis collapses — at 10.11
 
-Naively, 3 OS versions × 2 µarch flavors = 6 builds per package. In practice it is **2**:
+Naively, 5 OS versions × 3 µarch flavors = 15 builds per package. In practice it is **3**:
 
-macOS has a mature deployment-target mechanism. A binary compiled with `-mmacosx-version-min=10.15` against the Catalina SDK (or a later SDK with disciplined use of availability annotations and weak linking) runs correctly on 10.15, 11, and 12. This is how MacPorts-adjacent projects and most commercial software ship single binaries across OS releases.
+macOS has a mature deployment-target mechanism. A binary compiled with `-mmacosx-version-min=10.11` runs correctly on every release from El Capitan through Monterey, provided it avoids (or weak-links against) newer APIs. So the default remains: **build once against the oldest target, per µarch flavor** — the floor is simply 10.11 now instead of 10.15.
 
-So the default is: **build once against the 10.15 target, per µarch flavor.**
+The lower floor has real consequences, and they are handled explicitly:
 
-Exceptions exist and are handled explicitly:
+- **A wider `min_os` spread.** Many modern upstreams cannot cleanly target 10.11: C++17/20 library features, `clock_gettime` and friends (absent before 10.12), `thread_local` quirks, modern IPC. Formulae declare `min_os` honestly; the index filters per OS. Expect a natural stratification — the core orchard mostly at a 10.11 floor, much of the extended orchard at 10.12–10.14 floors. A package that *could* build for 10.11 but isn't worth the patching declares its floor and moves on: loud honesty over heroics.
+- **libc++ comes from the toolchain, not the system.** System libc++ on 10.11 predates half of C++17. All C++ packages statically link a modern libc++ from `aslice-toolchain` (§4.3), so the age of the system runtime stops mattering.
+- **HFS+ is back in the window.** 10.11–10.12 predate APFS entirely, and HDDs stayed HFS+ into the Mojave era. Everything filesystem-dependent degrades gracefully: `clonefile` → hardlink → copy (§11), and generation switching relies on `rename(2)`, which is atomic on HFS+ as well.
+- **Ancient TLS and expired root certificates** make the 10.11–10.13 system trust store nearly unusable for the modern web. `aslice-fetch` links its own TLS stack and CA bundle and verifies against pinned, countersigned hashes regardless — the security model never depended on the system store.
 
-- Packages that *require* post-Catalina APIs (e.g., need `NSFileProvider` revision, newer Security framework surfaces) declare `min_os = "11"` or `"12"` in their formula. The index simply filters them per-OS, and their binaries are built against the newer target.
-- Big Sur's dyld shared cache change (system dylibs no longer exist on disk) breaks build systems that probe for `/usr/lib/libfoo.dylib` file existence. Because we build *on the oldest supported OS* (or with the oldest SDK), this classic failure mode is avoided by construction, and formulae carry `patch` stanzas for the stubborn cases.
+### 4.2 The µarch axis grows: three flavors
 
-### 4.2 The µarch axis is real and worth serving
-
-The Catalina–Monterey Intel population splits cleanly on AVX2 (introduced with Haswell, 2013):
-
-- **No AVX2 (v2 required):** Mac Pro 2013 (Ivy Bridge-EP — the big one), iMac/MacBook Pro/Mac mini 2012, and the 2010–2012 Mac Pros with upgraded GPUs. These machines top out at Catalina or Big Sur.
-- **AVX2 (v3 capable):** everything 2014+ — iMac 5K, MacBook Pro 2015–2020, Mac mini 2018, iMac Pro, Mac Pro 2019. Monterey's supported list is entirely AVX2-capable.
-
-aslice adopts the x86-64 psABI microarchitecture levels as its flavor vocabulary:
+Extending the floor to 10.11 pulls pre-SSE4 CPUs into the supported population, so the flavor space grows from two to three. aslice adopts the x86-64 psABI microarchitecture levels as its flavor vocabulary:
 
 | Flavor | Level | Key ISA | Who needs it |
 |---|---|---|---|
-| `v2` | x86-64-v2 | SSE4.2, POPCNT, SSSE3 | Baseline — runs on every Catalina-capable Mac |
-| `v3` | x86-64-v3 | AVX2, BMI2, FMA | Haswell+; 10–40% faster on codecs, crypto, compression, math |
+| `v1` | x86-64 baseline | SSE2 | Runs on every 64-bit Intel Mac; the *only* choice for Core 2 Duo machines (2007–2009, Merom/Penryn) found on 10.11–10.13 |
+| `v2` | x86-64-v2 | SSE4.2, POPCNT | Nehalem/Westmere and later — Mac Pro 2009+, most 2010+ Macs, and everything Catalina-capable |
+| `v3` | x86-64-v3 | AVX2, BMI2, FMA | Haswell+ (2014→); 10–40% faster on codecs, crypto, compression, math |
 
 Notes:
 
-- **x86-64-v4 (AVX-512) is deliberately absent.** No Intel Mac ever shipped AVX-512. The flavor space is exactly two, keeping the binary matrix and the UX small.
-- Detection is one `sysctlbyname("hw.optional.avx2_0")` at install time. The manager itself is built `v2` (it gains nothing from AVX2) and selects flavors on the user's behalf; `aslice config set flavor v2` overrides.
-- Binaries are clearly tagged (`+v2` / `+v3` in the build identity, §7.2) so a v3 binary can never be selected on a v2 machine — the solver treats flavor as a hard constraint, not a preference.
+- **x86-64-v4 (AVX-512) is deliberately absent.** No Intel Mac ever shipped AVX-512. The flavor space is exactly three, keeping the binary matrix and the UX small.
+- **Detection** is a sysctl ladder at install time: `hw.optional.avx2_0` → `v3`; else SSE4.2+POPCNT via `machdep.cpu.features` → `v2`; else `v1`. The manager itself is built `v1` (it gains nothing from vector ISAs) and selects flavors on the user's behalf; `aslice config set flavor v1` overrides downward.
+- **The solver picks the highest flavor the hardware runs** and treats flavor as a hard constraint, not a preference — a `v3` slice on a Core 2 Duo is a solve-time conflict with a clear message, never a SIGILL at runtime.
+- Flavor interaction with `min_os` is orthogonal: a Haswell iMac happily runs 10.11, so `v3` + `min_os 10.11` is a real, served combination.
 
-### 4.3 Toolchain floor
+### 4.3 Toolchain floor — self-hosted from day one
 
-- Minimum build host: Xcode 12.4 CLT (last Catalina SDK) for the baseline builders; any later CLT that can still target 10.15 works elsewhere.
-- The package manager *core* is C++20, built with `-mmacosx-version-min=10.15`, statically linking libc++ and all third-party libraries, dynamically linking only `libSystem`. Result: one Mach-O binary that runs on all three OS versions with zero runtime dependencies. (Fully static linking is impossible on macOS — `libSystem` must be dynamic — but nothing else need be.)
-- A self-hosted `aslice-toolchain` package (modern Clang/LLD, CMake, Ninja, pkgconf) is a phase-2 deliverable so package *builds* aren't hostage to aging CLTs (§14).
+Extending to 10.11 changes the toolchain story from "convenience" to "load-bearing":
+
+- **Modern hosted Xcode can't reach 10.11.** Xcode 15-era toolchains no longer accept deployment targets below ~10.13, and GitHub's hosted Intel runners never ship anything older. Therefore `aslice-toolchain` — modern Clang, LLD where viable (ld64 from cctools-port otherwise), modern libc++, CMake, Ninja, pkgconf — moves from Phase 2 to **Phase 0** and is the authoritative build toolchain for all packages.
+- **Targeting darwin15 from a modern Clang works** (`-mmacosx-version-min=10.11` is still accepted; Clang's target floor is far older than libc++'s). The constraint is the C++ runtime, which is why the toolchain statically links its own libc++ into everything it produces.
+- **The package manager core** is C++20 built with this self-hosted toolchain: static libc++ and third-party libraries, dynamically linking only `libSystem`. One Mach-O binary runs on 10.11–12 with zero runtime dependencies. (Fully static linking is impossible on macOS — `libSystem` must be dynamic — but nothing else need be.)
+- **Bootstrap path:** build the toolchain on the newest available Intel macOS against the oldest archived SDK, with per-OS workarounds recorded in the toolchain's manifest; then rebuild the toolchain with itself. Build VMs run 10.11/10.12/10.13/10.14/10.15/11/12 guests on the farm (§9.3) so every claimed target is continuously tested, not assumed.
 
 ---
 
@@ -161,7 +163,7 @@ Privilege separation is structural: the helpers are separate executables (spawne
 
 ### 5.3 Why C++ — and what it costs
 
-The user-facing case for C++ is startup time, single-binary deployment across 10.15–12 with no runtime story, direct Mach-O/dyld/Seatbelt API access, and world-class tooling for the performance goals. The honest cost is memory safety, which is a security-goal liability. aslice treats that as an engineering constraint, not an embarrassment:
+The user-facing case for C++ is startup time, single-binary deployment across 10.11–12 with no runtime story, direct Mach-O/dyld/Seatbelt API access, and world-class tooling for the performance goals. The honest cost is memory safety, which is a security-goal liability. aslice treats that as an engineering constraint, not an embarrassment:
 
 - **Disciplined subset:** no owning raw pointers (RAII everywhere, `std::unique_ptr`/`shared_ptr` at boundaries), bounds-checked views (`std::span`, `string_view` with explicit lifetime rules), no C arrays, no `str*`/`mem*` libc string calls, exceptions banned across module boundaries.
 - **Hardened build:** `-fstack-protector-strong -fstack-clash-protection -D_FORTIFY_SOURCE=2` (via libc++ equivalents), full RELRO-analog (`-Wl,-bind_at_load` where tolerable), PIE, CFI under LTO (`-fsanitize=cfi`) for release builds once lld/ld64 support is verified per-OS.
@@ -265,7 +267,7 @@ This is the section that answers "package interoperability should still be avail
 
 | Kind | Examples | Effect on identity | Effect on interop |
 |---|---|---|---|
-| **µarch flavor** | `v2` vs `v3` | Hard selection constraint | ABI-identical; v3 binaries just won't *run* on v2 CPUs |
+| **µarch flavor** | `v1` / `v2` / `v3` | Hard selection constraint | ABI-identical; a higher-flavor binary just won't *run* on lesser hardware |
 | **Optimization flags** | `-O2`/`-O3`, `-march=native`, LTO | **None** | ABI-identical by construction; freely substitutable |
 | **Feature variants** | `+x265`, `+ssl` vs `+gnutls`, `+shared` | Only when `abi = true` | Changes exported interface → tracked in the ABI contract |
 
@@ -275,9 +277,9 @@ This is the section that answers "package interoperability should still be avail
 build_id = base32(sha256(canonical_json({
     name, version, revision,
     abi_variants,          # only variants declared abi = true
-    flavor,                # v2 | v3
-    min_os,                # 10.15 | 11 | 12
-    toolchain_id,          # e.g. "clang-19-10.15"
+    flavor,                # v1 | v2 | v3
+    min_os,                # 10.11 | 10.12 | … | 12
+    toolchain_id,          # e.g. "clang-19-10.11"
 })))[:10]
 ```
 
@@ -369,7 +371,7 @@ A profile is the merged symlink forest (bin/, lib/, share/, …) that users put 
 
 ### 8.3 Generations: atomic switching and rollback
 
-Every mutating operation builds a **new generation directory** and then swaps one symlink — atomic on APFS. This yields, almost for free:
+Every mutating operation builds a **new generation directory** and then swaps one symlink — atomic via `rename(2)` on both APFS and HFS+. This yields, almost for free:
 
 - `aslice rollback [generation]` — instant return to any previous state.
 - `aslice switch-generation 38` — bisect a broken upgrade in seconds.
@@ -398,23 +400,24 @@ GitHub-hosted Intel runners are a deprecating asset: `macos-11`/`macos-12` image
 
 ### 9.3 The build farm
 
-**Phase A (launch):** GitHub-hosted `macos-13` Intel runners, while they exist, cross-targeting Catalina: Xcode 12.4 CLT toolchain cached on the runners, `MACOSX_DEPLOYMENT_TARGET=10.15`. AVX2 (`v3`) builds compile fine on any Intel runner (compiling AVX2 code doesn't require executing it); *tests* for v3 slices run on AVX2 hardware only, and v2 slices test everywhere.
+**Phase A (launch):** GitHub-hosted `macos-13` Intel runners, while they exist, cover what hosted Xcode can reach (~10.13+ deployment targets) using the self-hosted toolchain. They are a bonus layer, not the system of record — hosted Xcode can no longer target 10.11/10.12 at all, which is precisely why the farm below exists. AVX2 (`v3`) builds compile fine on any Intel runner (compiling AVX2 code doesn't require executing it); *tests* for v3 slices run on AVX2 hardware only, while `v1` and `v2` slices test everywhere.
 
 **Phase B (the durable answer): self-hosted runners on real hardware**, enrolled as GitHub Actions self-hosted runners (or Buildkite/Forgejo runners if GitHub's self-hosted macOS story degrades):
 
 | Role | Hardware | Notes |
 |---|---|---|
-| `v2` builder + tester | Mac Pro 2013 or Mac mini 2012 (Ivy Bridge) | The exact no-AVX2 population |
+| `v1` tester | Oldest available Core 2 Duo (2007–2009 MacBook/iMac/mini) when obtainable; otherwise the 10.11 VM | v1 slices run everywhere, so this exists to *test*, not to build |
+| `v2` builder + tester | Mac Pro 2013 or Mac mini 2012 (Ivy Bridge) | The no-AVX2 population on 10.14+ |
 | `v3` builder + tester | Mac mini 2018 (Coffee Lake) — cheap, ECC-less but reliable, AVX2 | Workhorse; 2–4 units |
-| OS coverage | VMware Fusion / Parallels VMs: 10.15, 11, 12 guests | Apple's license permits macOS VMs on Apple hardware; one Mac mini 2018 hosts all three OS images |
+| OS coverage | VMware Fusion / Parallels VMs: 10.11, 10.12, 10.13, 10.14, 10.15, 11, 12 guests | Apple's license permits macOS VMs on Apple hardware; two Mac mini 2018s host the full seven-release matrix |
 | Signing | Offline root key; online signing key on an air-gapped-adjacent Mac mini with YubiKey-backed key custody | §10.2 |
 
 Estimated launch cost: under US$3,000 of used hardware plus power. This is the entire reason the project is feasible at hobbyist scale: **the platform is frozen.** No new macOS releases to chase, no new SDK churn, no Apple-silicon treadmill. The farm builds against a fixed target forever, and volunteer effort goes to packages, not platform firefighting. This inverts the dynamic that exhausted Homebrew's maintainers.
 
 ### 9.4 What gets prebuilt
 
-- **Core orchard (~300 packages):** both flavors, default variants — the shell/git/curl/python/openssl/ffmpeg stratum.
-- **Extended orchard (~2,000 packages):** both flavors, default variants, built on a rolling cadence.
+- **Core orchard (~300 packages):** all three flavors where the formula's `min_os` allows (§4.1), default variants — the shell/git/curl/python/openssl/ffmpeg stratum.
+- **Extended orchard (~2,000 packages):** all flavors compatible with each formula's `min_os` floor, default variants, built on a rolling cadence.
 - **Popular non-default variants:** a small allowlist (e.g., `ffmpeg+x265+svt-av1`, `python+debug`) per flavor, driven by analytics-free opt-in telemetry of failed-slice lookups — i.e., the system notices what users keep compiling locally and starts prebuilding it.
 - Everything else: source builds, with the ABI contract guaranteeing the result still interops with the prebuilt world.
 
@@ -453,7 +456,7 @@ The installer is a small, auditable shell script that fetches exactly two things
 
 ### 10.5 Sandboxed builds
 
-Every build phase runs under a Seatbelt (`sandbox-exec`) profile, which is present and functional across 10.15–12:
+Every build phase runs under a Seatbelt (`sandbox-exec`) profile — Seatbelt predates the entire 10.11–12 window and is present on every supported release:
 
 | Phase | Profile |
 |---|---|
@@ -462,7 +465,7 @@ Every build phase runs under a Seatbelt (`sandbox-exec`) profile, which is prese
 | install (to staging) | No network; write to staging dir only |
 | test | No network by default; opt-in `test_network = true` per formula, loudly logged |
 
-Seatbelt is deprecated by Apple but present through the entire target window; the profile abstraction (`SandboxPolicy` compiled to Seatbelt today) is designed so a future backend can replace it without touching formulae. A build that escapes its profile fails the build and files an automatic audit event.
+Seatbelt is deprecated by Apple on newer releases but frozen-in-place across our entire (frozen) target window; the profile abstraction (`SandboxPolicy` compiled to Seatbelt today) is designed so a future backend can replace it without touching formulae. A build that escapes its profile fails the build and files an automatic audit event.
 
 ### 10.6 Vulnerability and SBOM pipeline
 
@@ -485,7 +488,7 @@ Performance goals with concrete mechanisms:
 | Goal | Mechanism |
 |---|---|
 | **CLI startup < 10 ms** | Single Mach-O binary, static libc++, no interpreter, no JIT, lazy dyld binding, no network on the hot path |
-| **`install` of a cached slice < 300 ms** | Verify (Ed25519: microseconds) → zstd decompress → APFS `clonefile` into store → symlink generation swap. No relocation pass on default prefix. |
+| **`install` of a cached slice < 300 ms** | Verify (Ed25519: microseconds) → zstd decompress → APFS `clonefile` into store (HFS+ systems fall back to hardlink/copy) → symlink generation swap. No relocation pass on default prefix. |
 | **Index update < 200 ms typical** | Snapshot diffs against a cached snapshot hash — a few KB on a typical day, versus Homebrew's git-fetch taps |
 | **Solve < 50 ms typical** | SQLite-backed package index with prepared statements; PubGrub with clause caching; memoized per snapshot |
 | **Downloads saturate the pipe** | HTTP/2 multiplexing, 8-way parallel fetches, resumable ranges, zstd `--long` delta-friendly payloads |
@@ -569,13 +572,13 @@ A declarative `.app` format (URL + hash + codesign/notarization expectations + q
 ## 14. Roadmap
 
 **Phase 0 — Foundations (months 0–3)**
-C++ core skeleton: CLI, SQLite state, TUF client, zstd, Mach-O/otool wrappers. Bootstrap binary builds on Catalina with Xcode 12.4 and runs on 10.15/11/12 (tested in VMs). Core orchard seeded with ~30 packages (curl, git, openssl, python, zstd, cmake, ninja) built on real hardware.
+`aslice-toolchain` first: modern Clang/libc++ targeting darwin15, bootstrapped on the newest Intel macOS against the oldest archived SDK, then self-rebuilt. Then the C++ core skeleton: CLI, SQLite state, TUF client, zstd, Mach-O/otool wrappers. Bootstrap binary runs on every release 10.11–12 (VM-tested per release, including HFS+). Core orchard seeded with ~30 packages (curl, git, openssl, python, zstd, cmake, ninja) built on real hardware.
 
 **Phase 1 — Usable (months 3–6)**
-Solver with variants; store/profiles/generations; GHCR distribution; sandboxed builder; minisign slices; ~300-package core orchard, both flavors; `adopt --from-homebrew`; build farm Phase A + first self-hosted nodes.
+Solver with variants; store/profiles/generations; GHCR distribution; sandboxed builder; minisign slices; ~300-package core orchard, all flavors; `adopt --from-homebrew`; build farm Phase A + first self-hosted nodes.
 
 **Phase 2 — Differentiated (months 6–12)**
-ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; self-hosted `aslice-toolchain`; extended orchard to ~2,000 packages; popular-variant prebuilds driven by lookup telemetry; reproducible builds for core.
+ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; `aslice-toolchain` v2 (LLD-first linking, ccache integration); extended orchard to ~2,000 packages; popular-variant prebuilds driven by lookup telemetry; reproducible builds for core.
 
 **Phase 3 — Durable (year 2)**
 Two-builder reproducibility cross-checks; transparency log; community mirror program; declarative `.app` support; multi-user daemon if demand materializes; governance formalization.
@@ -587,10 +590,11 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 | Risk | Severity | Mitigation |
 |---|---|---|
 | GitHub degrades self-hosted macOS runner support or GHCR terms change | High | Mirror-first index design (§9.1); Buildkite/Forgejo runner portability; static-mirror escape hatch means GHCR is replaceable |
-| Apple removes Seatbelt in a future macOS | Low for scope | Target window is 10.15–12 — frozen releases where Seatbelt is present; the policy abstraction isolates the backend regardless |
-| Xcode/CLT availability for 10.15-targeted builds | Medium | Xcode 12.4 archived and cached; self-hosted toolchain (Phase 2) ends CLT dependence for package builds; Catalina-era SDK usage on builders is within Apple's license on Apple hardware |
+| Apple removes Seatbelt in a future macOS | Low for scope | Target window is 10.11–12 — frozen releases where Seatbelt is present; the policy abstraction isolates the backend regardless |
+| Modern Xcode can't target 10.11/10.12 (hosted floor ~10.13) | Medium | Self-hosted toolchain is Phase 0 and authoritative (§4.3); hosted CI is a bonus layer; archived SDKs cached on the farm; SDK use on builders stays within Apple's license on Apple hardware |
 | Volunteer burnout (the Homebrew lesson) | High | Frozen platform = fixed workload; automation-first orchard CI; small core orchard with quality bar; explicit scope refusal (no Apple Silicon, no new macOS) |
 | Signing-key compromise | Medium | Threshold offline root, YubiKey custody, practiced rotation runbook, transparency log for detection |
+| 10.11-era testing hardware scarcity | Medium | VMs cover the full 10.11–12 matrix on the farm; v1 correctness additionally smoke-tested on a real Core 2 Duo when one is obtainable; the frozen platform means test images never churn |
 | ABI scanner false negatives (missed breakage) | Medium | Belt and suspenders: compat-version check + symbol fingerprint + reverse-dependency smoke tests in CI; when in doubt, rebuild dependents (we own the build farm) |
 | C++ vulnerability in aslice itself | Medium | §5.3 program: subset, hardening, sanitizers, fuzzing, tiny trust-critical helpers |
 | GPL/license compliance for hosted binaries | Low | Corresponding-source archive mirrored per license; SPDX SBOMs make compliance auditable |
@@ -609,8 +613,8 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 
 | | Homebrew (Intel, 2026) | MacPorts | Nix | **aslice** |
 |---|---|---|---|---|
-| 10.15–12 Intel support | Tier 3 → removed 2027 | Partial, best-effort | Degrading | **First-class, the whole point** |
-| Prebuilt binaries | Frozen legacy bottles | Sparse | x86_64-darwin cache shrinking | **v2 + v3 flavors, default path** |
+| 10.11–12 Intel support | Tier 3 → removed 2027 (and never covered ≤10.14) | Partial, best-effort | Degrading | **First-class, the whole point** |
+| Prebuilt binaries | Frozen legacy bottles | Sparse | x86_64-darwin cache shrinking | **v1 + v2 + v3 flavors, default path** |
 | µarch targeting | No | No | No | **AVX2 flavor first-class** |
 | User build flags | Removed from core | Yes (variants) | Yes (overlays) | **Yes — with ABI-aware interop** |
 | Mix binary + custom builds | Breaks assumptions | Works, all-local | Full rebuild cascade | **Contract-checked substitution** |
