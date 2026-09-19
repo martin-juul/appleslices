@@ -2,8 +2,8 @@
 
 **Name.** *aslice* — an apple slice: a nod to the Macintosh apple and to the shape of the project itself. Binary packages are **slices**; formula repositories are **orchards**; the manager picks slices off the orchard, prebuilt or baked to order. The vocabulary is deliberately distinct from Homebrew's beer terminology to avoid community confusion and trademark friction. The project name is styled lowercase everywhere, including sentence starts — like the command.
 
-- **Status:** Design draft, v0.4 — September 2026
-- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support). v0.3 resolves open question #4: **aslice collects no telemetry or analytics of any kind, ever** — the project is infrastructure, not a product (§2.2 N7, §9.4, §15). v0.4 sharpens it: **download counts are rejected as a value signal too** — on a deprecated-OS platform, obscure ≠ low-value (§9.4)
+- **Status:** Design draft, v0.5 — September 2026
+- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support). v0.3 resolves open question #4: **aslice collects no telemetry or analytics of any kind, ever** — the project is infrastructure, not a product (§2.2 N7, §9.4, §15). v0.4 sharpens it: **download counts are rejected as a value signal too** — on a deprecated-OS platform, obscure ≠ low-value (§9.4). v0.5 adds the **repository system** (§9.6) and **vendor binary packages**: software that only ships as a `.pkg`/`.dmg`, hosted or vendor-fetched, installed without ever running installer scripts (§12.4; schema in PACKAGE-FORMAT v0.2 §3.11)
 - **Scope:** macOS 10.11 (El Capitan) through 12 (Monterey), Intel x86_64 only
 - **Implementation:** C++20 core, single self-contained binary
 - **Audience:** Maintainers, founding contributors, and early reviewers
@@ -64,12 +64,13 @@ Each clause is developed in its own section below.
 - **G6 — A materially better performance profile** (§11): sub-10 ms CLI startup, parallel solver and downloads, zstd payloads, APFS-aware linking.
 - **G7 — Atomic, rollback-capable installations** via generations (§8).
 - **G8 — Low maintainer burden.** The platform is frozen by Apple; the design exploits that stability instead of fighting it (§15).
+- **G9 — Vendor-binary coverage.** Software that only exists as a `.pkg`/`.dmg` — vendor CLIs, commercial audio tools, frozen apps — installs through the same store, generations, and lock files as everything else, without ever executing installer scripts (§12.4).
 
 ### 2.2 Non-goals
 
 - **N1 — Apple Silicon.** Not now, not by accident. The architecture must not preclude it, but no engineering effort goes to it. Homebrew owns that space.
 - **N2 — macOS 13+ on Intel.** Tahoe-era Intel machines (2019–2020) are welcome, but the build targets remain 10.11–12; Ventura+ Intel gets whatever falls out naturally.
-- **N3 — GUI applications (Casks) at launch.** A declarative app-install format is designed (§12.4) but core packages come first.
+- **N3 — GUI application *polish* at launch.** Vendor-binary packages (§12.4) cover `.pkg`/`.dmg`-only software — CLI tools and apps alike. What is deferred is app-specific chrome: Launchpad integration, updater handoff, a GUI manager. Core CLI packages still come first.
 - **N4 — Linux/Windows.** The codebase should stay portable, but no effort is spent there.
 - **N5 — Replacing the system.** aslice never touches `/usr`, `/System`, or `/usr/local`'s ownership. It lives in its own prefix.
 - **N6 — 32-bit (i386).** Every Mac that can run 10.11 is 64-bit capable, so slices are x86_64-only. The 32-bit software that keeps many users on ≤10.14 is out of scope for the manager itself — aslice manages their 64-bit toolchain, not their legacy apps.
@@ -90,6 +91,7 @@ Homebrew's structural constraints — not its maintainers — produced its weakn
 | Ruby runtime, git-cloned taps | Slow startup, slow `brew update` | Single C++ binary, content-addressed TUF-signed index with snapshot diffs (§11) |
 | CI hostage to GitHub-hosted Intel runners | The current collapse | **Self-hosted build farm on real Intel hardware** from day one (§9.3) |
 | Opt-out usage analytics | Consent assumed; users are a metrics pipeline | **No telemetry or analytics of any kind, ever** — aslice is infrastructure, not a product (§2.2 N7) |
+| Casks may run `installer script:` and vendor pkg hooks | Arbitrary vendor code with user (or admin) privileges at install | **Vendor binaries install payload-only** (§12.4): pkg/dmg contents are extracted per a declarative map, signer-pinned, and embedded scripts never execute |
 
 ---
 
@@ -148,7 +150,7 @@ aslice (single binary, unprivileged)
  └── aslice-link      ── the only component that writes the store/profile
 ```
 
-Privilege separation is structural: the helpers are separate executables (spawned by the main binary, which re-executes itself with a subcommand) running under Seatbelt profiles (§10.5) with exactly the capabilities their phase requires. The fetch helper can't touch the store; the extractor has no network; the linker has no network and no compiler. Each helper is small (a few hundred lines) and independently auditable — this is where the C++ attack-surface discipline pays for itself.
+Privilege separation is structural: the helpers are separate executables (spawned by the main binary, which re-executes itself with a subcommand) running under Seatbelt profiles (§10.5) with exactly the capabilities their phase requires. The fetch helper can't touch the store; the extractor has no network; the linker has no network and no compiler. Each helper is small (a few hundred lines) and independently auditable — this is where the C++ attack-surface discipline pays for itself. `aslice-extract` is also the component that expands vendor `.pkg` (xar) and `.dmg` payloads (§12.4) — archive and installer-payload handling are the same trust problem and get the same tiny, fuzzed code path.
 
 ### 5.2 Major components
 
@@ -169,7 +171,7 @@ The user-facing case for C++ is startup time, single-binary deployment across 10
 
 - **Disciplined subset:** no owning raw pointers (RAII everywhere, `std::unique_ptr`/`shared_ptr` at boundaries), bounds-checked views (`std::span`, `string_view` with explicit lifetime rules), no C arrays, no `str*`/`mem*` libc string calls, exceptions banned across module boundaries.
 - **Hardened build:** `-fstack-protector-strong -fstack-clash-protection -D_FORTIFY_SOURCE=2` (via libc++ equivalents), full RELRO-analog (`-Wl,-bind_at_load` where tolerable), PIE, CFI under LTO (`-fsanitize=cfi`) for release builds once lld/ld64 support is verified per-OS.
-- **CI sanitizers:** every PR runs the test suite under ASan+UBSan on both flavors; parsers and the archive extractor are continuously fuzzed with libFuzzer — formula parsing, manifest parsing, tar/zip extraction, and the index parser are all *untrusted-input surfaces* and are treated accordingly.
+- **CI sanitizers:** every PR runs the test suite under ASan+UBSan on both flavors; parsers and the archive extractor are continuously fuzzed with libFuzzer — formula parsing, manifest parsing, tar/zip/**xar**/cpio extraction, and the index parser are all *untrusted-input surfaces* and are treated accordingly.
 - **The trust-critical helpers are tiny.** fetch/extract/link together are the only code paths that touch hostile data with ambient authority, and each is kept small enough to review line-by-line.
 
 ---
@@ -247,6 +249,7 @@ Key properties:
 - **No Turing-complete host code at install time.** Starlark executes only during *builds*, inside the sandbox, with capabilities enumerated in `ctx`. There is no `post_install` hook that runs on the user's machine — post-install behavior (creating data dirs, registering launch agents) is expressed declaratively in `package.toml` and executed by aslice itself. (Homebrew 7.0 is migrating the same direction with `*_steps`; aslice simply starts there.)
 - **Everything is pinned.** Source URLs carry hashes; patches are checksummed files; the index records the full closure.
 - **Variants are declared, typed, and ABI-tagged** by the package author — the foundation of the interop model in §7.
+- **Vendor binaries are the same format, minus the build.** `type = "binary"` packages describe a `.pkg`/`.dmg` artifact with per-OS tags, a pinned signer, and a declarative payload map — no `build.star`, no executed scripts (§12.4, PACKAGE-FORMAT §3.11).
 
 ### 6.2 Binary package format (`.slice`)
 
@@ -259,7 +262,7 @@ ffmpeg-7.1-0+core.v3.2f4a9c1e.slice
  └── signature         # minisign/cosign signature over the above (§10.2)
 ```
 
-Install of a `.slice` is: verify signature → verify payload hashes → extract into store path → ABI-check against the packages that will link to it → register in SQLite → link into profile. **No code from the package executes at any point.**
+Install of a `.slice` is: verify signature → verify payload hashes → extract into store path → ABI-check against the packages that will link to it → register in SQLite → link into profile. **No code from the package executes at any point.** A repackaged vendor binary produces exactly the same `.slice` shape — its manifest's provenance section records the vendor artifact hash and signer instead of a build recipe.
 
 ---
 
@@ -288,6 +291,8 @@ build_id = base32(sha256(canonical_json({
 ```
 
 Deliberately **absent** from the hash: `-O` level, `-march` beyond the flavor floor, debug info, build timestamps, build host. Two builds of the same formula with the same ABI variants are the *same identity* even if one was built by the build farm with `-O2` and one by the user with `-O3 -march=native`. They are interchangeable everywhere.
+
+For `type = "binary"` vendor packages nothing is compiled, so `flavor` and `toolchain_id` drop out of the identity and the artifact's sha256 effectively *is* the input identity — one slice serves all flavors, tagged only with the vendor's OS-support bounds (§12.4).
 
 Note what this does *not* do: it does not hash the dependency closure (the Nix model). Nix's approach gives perfect hermeticity at the cost of making substitution impossible whenever any dependency differs — exactly the interop failure the user wants to avoid. aslice instead gets interop from the ABI contract below.
 
@@ -319,6 +324,7 @@ Consequences:
 - **Mix prebuilt and self-compiled freely.** Your `-O3 -march=native` ffmpeg and the build farm's `-O2` x264 interop because the contract, not the provenance, governs linking.
 - **Breakage is caught at install time, not at runtime** three weeks later. If a rebuilt library no longer covers what its clients reference, the solver refuses the combination and tells you exactly which symbol set regressed.
 - **`abi = true` variants partition the space correctly.** `ffmpeg+x265` and `ffmpeg-x265` are different build identities and can coexist in the store; dependents record which one they were linked against.
+- **Vendor binaries participate too.** The ABI scan runs on a vendor package's payload at pack time, so a vendor dylib satisfies dependents through the same contract as a farm-built one (§12.4).
 
 ### 7.4 User flags
 
@@ -355,6 +361,7 @@ The variant domain per package is small by policy (§13.2 limits `abi = true` va
  │    ├── ffmpeg-7.1-0+core.v2.2f4a9c1e/        # flavors coexist
  │    ├── x264-0.164-0+core.v3.77aa10b2/
  │    └── …
+ ├── apps/         # vendor-binary .app bundles (§12.4)
  ├── profiles/
  │    ├── default -> generations/42             # symlink; the live view
  │    └── generations/
@@ -396,7 +403,7 @@ The store grows unboundedly without GC — the classic Nix complaint. Defaults: 
 
 **Layer 2: The index as static, signed files.** The package index (TUF metadata + zstd JSON snapshots) is published both to a GitHub Release asset stream and to `raw`/Pages endpoints, and — critically — is *trivially mirrorable*: any static HTTP server can host a complete aslice repo. Mirror support is a first-class config (`mirrors = [...]`), not an afterthought, because the long-term health of a legacy-platform project cannot depend on one vendor's continued generosity.
 
-**Fallback:** plain GitHub Releases assets (2 GB per asset ceiling — no package comes close) for environments where GHCR auth/rate limits are a problem. The client treats GHCR, Releases, and static mirrors as interchangeable transports for identical, identically-signed content.
+**Fallback:** plain GitHub Releases assets (2 GB per asset ceiling — no package comes close) for environments where GHCR auth/rate limits are a problem. The client treats GHCR, Releases, and static mirrors as interchangeable transports for identical, identically-signed content. All three are *transports* for the canonical distribution unit — the **repository tree** (§9.6): a static, signed, mirrorable directory of TUF metadata, index snapshots, formula metadata, and blobs. GHCR is where blobs may live; a repository is what a client actually consumes.
 
 ### 9.2 The GitHub CI problem — stated plainly
 
@@ -433,6 +440,26 @@ Estimated launch cost: under US$3,000 of used hardware plus power. This is the e
 
 Every slice ships a SLSA-style provenance attestation in its manifest: builder identity, source hash, formula git commit, toolchain ID, build environment digest, and (phase 3) reproducibility status. `aslice provenance ffmpeg` shows it. Reproducible-build verification — rebuilding on a second, independent builder and bit-comparing — starts with the core orchard and extends outward; slices that verify get a `reproducible: true` badge in the index.
 
+For vendor-binary slices (§12.4) the provenance section instead records: the vendor artifact URL and sha256, the pinned signer identity and notarization state at pack time, the repackaging tool version, and whether the payload is hosted (redistributable) or vendor-fetched.
+
+### 9.6 The repository system
+
+GHCR, Releases, and static mirrors are *transports*. The canonical distribution unit — the thing a client actually consumes — is the **aslice repository**: a self-contained, signed, static tree:
+
+```
+repo.example.org/
+ ├── tuf/            # root.json, snapshot.json, timestamp.json, targets.json
+ ├── index/          # zstd JSON snapshots + diffs (the solver's world)
+ ├── formulas/       # resolved package metadata (pure data; never executable)
+ └── blobs/sha256/   # slices and vendored sources, content-addressed
+```
+
+- **Anyone can host one.** Any static HTTP server, a GitHub Pages site, a GHCR org (blobs in OCI, index overlaid), or a `file://` directory on a lab NAS. A mirror is simply a full copy of the tree; clients fail over across a repository's declared mirrors.
+- **Repositories carry recipes *and* binaries.** `formulas/` holds the resolved metadata the solver needs (recipes); `blobs/` holds the slices — each tagged in the index with its OS-support bounds (`min_os`/`max_os`), flavor, and arch. A repository may be *binary-only* — repackaged vendor software with no orchard behind it at all (§12.4) — which is how communities serve niche pkg/dmg-only ecosystems (audio plugins, lab instruments) without asking the project for orchard space.
+- **Trust is per-repository.** `aslice repo add <url>` pins the repository's TUF root key on first use (TOFU): the fingerprint is displayed with a strong recommendation to verify out-of-band, stored in the DB, and any later change is a loud, blocking event. The project's canonical repository ships pre-pinned in the bootstrap. Third-party repositories are exactly as trustworthy as their operators — and can still never execute code at install time, because no repository can make that happen.
+- **Namespaces and collisions.** Resolution order: core > extended > third-party in add order. Explicit addressing is `repo:pkg` (`audiolab:convolver`); a third-party name shadowing a core name is reported by `doctor`, never silently preferred.
+- **Authoring → publishing.** `aslice repo build` compiles an orchard (git formulae) — or a bare manifest directory — into a repository tree; `aslice repo sign` applies the keys; `aslice repo publish` pushes to the configured transport. The project's own pipeline is the same commands in CI, so the canonical repository holds no magic a community repository can't reproduce.
+
 ---
 
 ## 10. Security Model
@@ -443,13 +470,13 @@ The bar: be measurably better than Homebrew's model, on the same machine, withou
 
 - Formula *metadata* is TOML — pure data, validated against a schema, rejected on unknown fields.
 - Formula *logic* is Starlark executed in the build sandbox with a capability-only API (`ctx.run`, `ctx.make`, `ctx.env`) — no filesystem access outside the build dir, no network, no subprocess outside the declared toolchain, deterministic by construction.
-- **Binary installs execute no package code whatsoever.** There is no `post_install`. Data-directory creation, launch-agent registration, and shell-completion placement are declarative manifest entries applied by aslice's own code. This removes the single largest supply-chain surface in the Homebrew model: arbitrary maintainer Ruby running on every install.
+- **Binary installs execute no package code whatsoever.** There is no `post_install`. Data-directory creation, launch-agent registration, and shell-completion placement are declarative manifest entries applied by aslice's own code. This removes the single largest supply-chain surface in the Homebrew model: arbitrary maintainer Ruby running on every install. The same rule binds vendor binaries: `.pkg` `preinstall`/`postinstall` scripts and `.dmg` autolaunch mechanics never execute (§12.4) — payload extraction is all that happens.
 
 ### 10.2 Signatures and repository integrity (TUF)
 
 - **Metadata:** the index is wrapped in [The Update Framework](https://theupdateframework.io/) — offline root key (threshold, YubiKey custody), short-lived online snapshot/timestamp keys, targets key on the signing host. This gives rollback, freeze, and mix-and-match attack protection — the failure modes that plain "signed packages" miss.
 - **Packages:** every slice is signed (minisign-compatible format, Ed25519; cosign-compatible verification for the OCI layer). Signature verification happens **before extraction**, and the verified manifest is what the linker consumes.
-- **Sources:** every source tarball hash is pinned in the formula *and* countersigned in the index; `fetch` verifies against both.
+- **Sources:** every source tarball hash is pinned in the formula *and* countersigned in the index; `fetch` verifies against both. Vendor artifacts are additionally **signer-pinned** (§12.4): a silent change of code-signing identity upstream is a hard failure, not a warning.
 - **Key compromise response:** root key is 3-of-5 threshold across founding maintainers; revocation and rotation is a practiced runbook, not a hope.
 
 ### 10.3 Trust bootstrapping
@@ -459,7 +486,7 @@ The installer is a small, auditable shell script that fetches exactly two things
 ### 10.4 Privilege discipline
 
 - **No sudo in steady state.** Not for install, not for upgrade, not for uninstall. The prefix is user-owned from creation.
-- **Never touches `/usr/local`.** Coexistence with Homebrew/MacPorts is by construction, and the historic `/usr/local` ownership flaw is simply not inherited.
+- **Never touches `/usr/local`.** Coexistence with Homebrew/MacPorts is by construction, and the historic `/usr/local` ownership flaw is simply not inherited. Vendor-binary apps install under `/opt/aslice/apps/` — never `/Applications` — with a per-user `~/Applications` symlink as the opt-in convenience (§12.4).
 - **No setuid binaries, no helper daemon at launch.** A future multi-user mode (shared lab machines) will use a launchd daemon that accepts only TUF-verified operation plans over a local socket with peer-credential checks — designed, but gated behind demand.
 
 ### 10.5 Sandboxed builds
@@ -473,18 +500,20 @@ Every build phase runs under a Seatbelt (`sandbox-exec`) profile — Seatbelt pr
 | install (to staging) | No network; write to staging dir only |
 | test | No network by default; opt-in `test_network = true` per formula, loudly logged |
 
+Vendor-binary payload extraction (`xar` expansion, `hdiutil` attach, cpio unpack) runs under the unpack profile — no network, writes confined to staging; there is no phase in which a vendor artifact gets to run anything.
+
 Seatbelt is deprecated by Apple on newer releases but frozen-in-place across our entire (frozen) target window; the profile abstraction (`SandboxPolicy` compiled to Seatbelt today) is designed so a future backend can replace it without touching formulae. A build that escapes its profile fails the build and files an automatic audit event.
 
 ### 10.6 Vulnerability and SBOM pipeline
 
-- Every slice embeds an **SPDX SBOM** generated from the build manifest (sources, patches, dependency closure, toolchain).
+- Every slice embeds an **SPDX SBOM** generated from the build manifest (sources, patches, dependency closure, toolchain). Vendor-binary slices ship a payload-only SBOM (file list, hashes, signer) — less deep than a source SBOM, still enough for `audit` to bind CVEs via CPE.
 - `aslice audit` matches the installed set against OSV/GitHub Advisory feeds and reports CVEs with affected-version ranges — locally, offline-capable with a cached feed.
 - Formulae declare upstream security-contact and EOL policy; packages past upstream EOL are surfaced in `audit` and require `--allow-eol` to install.
 
 ### 10.7 What this does not solve (honesty section)
 
 - A malicious *core maintainer* with signing access can still ship bad slices; threshold keys, reproducible-build cross-checks (§9.5), and a public transparency log of index snapshots are the mitigations, and they reduce but do not eliminate insider risk.
-- Sandboxing contains *builds*, not the runtime behavior of installed software. aslice is a package manager, not an endpoint product.
+- Sandboxing contains *builds*, not the runtime behavior of installed software. aslice is a package manager, not an endpoint product. This bears repeating for vendor binaries: payload-only installation removes *installer-script* risk, not the risk of the vendor binary itself — signer pinning and hash pinning ensure you get exactly the vendor's artifact, and that is all they ensure.
 - C++ memory-safety risk in aslice itself is managed per §5.3; the parsers and extractors — the untrusted-input surfaces — get the fuzzing and the smallest footprints.
 
 ---
@@ -516,6 +545,7 @@ aslice install ffmpeg                  # binary-first; flavor auto-detected
 aslice install ffmpeg --build-from-source
 aslice install ffmpeg --variant +x265 --cflags="-O3 -march=native"
 aslice install ffmpeg@v6               # version pinning
+aslice install audiolab:convolver      # explicit repository namespace (§9.6)
 aslice upgrade / aslice upgrade ffmpeg
 aslice uninstall x264 / aslice autoremove
 aslice search / info / leaves / why <pkg>
@@ -525,6 +555,8 @@ aslice audit                           # CVE report for the installed set
 aslice rollback / switch-generation / history
 aslice gc [--dry-run] [--older-than 30d]
 aslice orchard add myorg/orchard / orchard pin myorg/orchard <commit>
+aslice repo add https://repo.example.org   # add a signed repository (§9.6)
+aslice repo list / repo remove <name> / repo build / repo publish
 aslice adopt --from-homebrew           # migration assistant (§13.3)
 aslice config set flavor v2            # overrides
 aslice doctor                          # environment sanity, loudly honest
@@ -534,19 +566,30 @@ aslice doctor                          # environment sanity, loudly honest
 
 - **Binary is the default, source is a flag.** A user who never passes `--variant` or `--cflags` never sees a compiler.
 - **Every decision is explainable.** `--explain` on any command shows the solver's derivation; `--dry-run` shows the exact plan: which slices, which local builds, which generation change.
-- **Loud honesty.** EOL packages, unsigned orchards, deprecated variants, and fallback-to-source events are announced, not buried. `doctor` reports Tier-style truth about the machine rather than pretending uniformity.
+- **Loud honesty.** EOL packages, unsigned orchards, deprecated variants, fallback-to-source events, and non-notarized vendor binaries are announced, not buried. `doctor` reports Tier-style truth about the machine rather than pretending uniformity.
 - **Scriptable:** `--json` on everything; stable exit-code contract; machine-readable `plan`/`apply` split (`aslice plan install ffmpeg > plan.json && aslice apply plan.json`) — which is also what the future multi-user daemon consumes.
 
-### 12.3 Orchards and trust levels
+### 12.3 Orchards, repositories, and trust levels
 
-Orchards are git repos of formula directories, but trust is explicit:
+Orchards are git repos of formula directories — the *authoring* format. Repositories (§9.6) are the *distribution* format. Trust is explicit at both layers:
 
 - **Core/extended orchards:** signed by project keys; Starlark + TOML only.
-- **Third-party orchards:** installed disabled by default; enabling one prints its trust implications (its formulae can cause local source builds — sandboxed — but *never* execute at binary-install time, because nothing ever does). Third-party orchards can distribute their own signed slices under their own TUF keys; the client records per-orchard key pins.
+- **Third-party orchards:** installed disabled by default; enabling one prints its trust implications (its formulae can cause local source builds — sandboxed — but *never* execute at binary-install time, because nothing ever does).
+- **The canonical repository:** the project orchards compiled and signed by project keys; pre-pinned in the bootstrap.
+- **Third-party repositories:** added explicitly, root key pinned on first use (TOFU, fingerprint displayed, changes blocking). A third-party repository can serve its own signed slices — including binary-only vendor repackagings — under its own keys. The one thing no repository can do is make aslice execute package code at install time; that door is closed structurally, not by trust policy.
 
-### 12.4 GUI apps (later)
+### 12.4 Vendor binaries (pkg/dmg) and GUI apps
 
-A declarative `.app` format (URL + hash + codesign/notarization expectations + quarantine handling) is reserved in the schema. It deliberately executes no install scripts — `.app` delivery is copy-and-verify — and is out of launch scope.
+Some software for this platform will only ever ship as a `.pkg` installer or a `.dmg` — commercial audio tools, vendor CLIs, frozen releases of abandoned apps. aslice installs it **without ever running installer code**:
+
+- **`.pkg`:** expanded with `xar`/`pkgutil --expand`; only the `Payload` is extracted, per the declarative path map in the formula. `preinstall`/`postinstall` scripts are never executed — full stop. Packages whose function genuinely *requires* script execution (drivers, kexts, anything wiring into the OS) are out of scope by policy (§13.1) — the same hard line as source packages, applied to binaries.
+- **`.dmg`:** attached read-only via `hdiutil -nobrowse -readonly`; declared items copied. No autolaunch, no quarantine propagation.
+- **Apps** install under `/opt/aslice/apps/` (owned by the prefix, not `/Applications`), with an optional per-user `~/Applications` symlink; Finder and Launch Services pick them up from either location.
+- **Provenance is pinned.** The formula records the expected signing identity (`Developer ID Application: Vendor (TEAMID)`) and notarization expectation; the verifier checks the signature *before* extraction and hard-fails on a silent signer change — a classic supply-chain attack against binary distribution.
+- **Two distribution modes, license-driven.** `redistribute = true` → the farm repackages the payload into a normal `.slice`, hosted in the repository like any other (best UX: atomic, resumable, rollback-able). `redistribute = false` → the formula stays a pointer: the client fetches the vendor URL itself (hash- and signer-pinned), extracts locally in the sandbox, installs payload only. Same install semantics; only the transport differs. Non-redistributable software still gets generations, lock files, and `audit`.
+- **OS support is tagged per artifact.** Each `[[binary]]` entry carries its own `min_os`/`max_os`/`arch`, so a vendor's "legacy" build for 10.11–10.13 and "current" build for 10.14+ coexist in one formula and the solver picks the artifact matching the machine — never a "this application cannot be opened" surprise after install. Vendor claims are checked at pack time against the bundle's `LSMinimumSystemVersion` and the pkg's Distribution requirements where present; mismatches are lint errors, because an honest tag is the entire point.
+
+Vendor binaries participate in the store, generations, profiles, lock files, and `audit` exactly like source-built packages. Their `build_id` excludes flavor and toolchain (§7.2), and their payload dylibs get the same ABI scan at pack time — dependents link against vendor libraries through the same contract as farm-built ones.
 
 ---
 
@@ -556,6 +599,7 @@ A declarative `.app` format (URL + hash + codesign/notarization expectations + q
 
 - Core orchard: maintained, security-patched, reproducible-build targets; no package enters without a working `tests.star` smoke test on at least one OS × one flavor.
 - Upstream-EOL software: allowed in extended with `eol = true` metadata; excluded from core.
+- Vendor binary packages: accepted into extended only with a verifiable signature and honest OS-support tags; into core only if additionally redistributable (so the farm hosts the slice) and payload-only by construction. A vendor package whose scripts turn out to be required is removed, not accommodated.
 - No packages that require disabling SIP, installing kexts, or patching system files. Ever. This is a hard line and a marketing feature.
 
 ### 13.2 Variant discipline
@@ -565,8 +609,8 @@ A declarative `.app` format (URL + hash + codesign/notarization expectations + q
 ### 13.3 Coexistence and migration from Homebrew
 
 - **Coexistence:** aslice lives in `/opt/aslice`, never touches `/usr/local`, and `doctor` detects a Homebrew installation and advises on PATH ordering rather than conflicting.
-- **`aslice adopt --from-homebrew`:** reads Homebrew's Cellar and `brew leaves`, maps names to aslice formulae (with a maintained alias table for renames), produces an install plan that recreates the same leaf set — including mapping old `--with-*` Homebrew options to aslice variants where an alias exists. It does not attempt binary reuse of Homebrew's Cellar (different prefix assumptions); it reuses the *intent*.
-- **Formula importer (for orchard authors):** a tool that mechanically translates simple Homebrew Ruby formulae — `url`/`sha256`/`depends_on`/standard `configure && make` bodies — into TOML+Starlark drafts, with a human review step. Realistic coverage target: the simple ~60–70% of formulae; the rest are ports, not translations.
+- **`aslice adopt --from-homebrew`:** reads Homebrew's Cellar and `brew leaves`, maps names to aslice formulae (with a maintained alias table for renames), produces an install plan that recreates the same leaf set — including mapping old `--with-*` Homebrew options to aslice variants where an alias exists. Cask leaves map to vendor-binary packages where one exists, flagged for review when the vendor artifact's OS tags don't cover the machine. It does not attempt binary reuse of Homebrew's Cellar (different prefix assumptions); it reuses the *intent*.
+- **Formula importer (for orchard authors):** a tool that mechanically translates simple Homebrew Ruby formulae — `url`/`sha256`/`depends_on`/standard `configure && make` bodies — into TOML+Starlark drafts, with a human review step. Realistic coverage target: the simple ~60–70% of formulae; the rest are ports, not translations. A companion importer turns simple Casks (`url`/`sha256`/`app`/`pkg`) into `type = "binary"` drafts — Casks are *more* mechanical than formulae, so coverage should be higher; the reviewer fills in signer pinning and OS tags.
 
 ### 13.4 Governance
 
@@ -583,13 +627,13 @@ A declarative `.app` format (URL + hash + codesign/notarization expectations + q
 `aslice-toolchain` first: modern Clang/libc++ targeting darwin15, bootstrapped on the newest Intel macOS against the oldest archived SDK, then self-rebuilt. Then the C++ core skeleton: CLI, SQLite state, TUF client, zstd, Mach-O/otool wrappers. Bootstrap binary runs on every release 10.11–12 (VM-tested per release, including HFS+). Core orchard seeded with ~30 packages (curl, git, openssl, python, zstd, cmake, ninja) built on real hardware.
 
 **Phase 1 — Usable (months 3–6)**
-Solver with variants; store/profiles/generations; GHCR distribution; sandboxed builder; minisign slices; ~300-package core orchard, all flavors; `adopt --from-homebrew`; build farm Phase A + first self-hosted nodes.
+Solver with variants; store/profiles/generations; GHCR distribution; sandboxed builder; minisign slices; ~300-package core orchard, all flavors; `adopt --from-homebrew`; build farm Phase A + first self-hosted nodes. Repository client (`repo add/list`, TOFU key pinning) from the start — the canonical repository *is* the default transport, so the multi-repo machinery costs little extra.
 
 **Phase 2 — Differentiated (months 6–12)**
-ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; `aslice-toolchain` v2 (LLD-first linking, ccache integration); extended orchard to ~2,000 packages; popular-variant prebuilds chosen from community requests (§9.4); reproducible builds for core.
+ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; `aslice-toolchain` v2 (LLD-first linking, ccache integration); extended orchard to ~2,000 packages; popular-variant prebuilds chosen from community requests (§9.4); reproducible builds for core; vendor-binary packages (`type = "binary"`, payload extraction, signer pinning) and the Cask importer; `aslice repo build/publish` for third-party repositories.
 
 **Phase 3 — Durable (year 2)**
-Two-builder reproducibility cross-checks; transparency log; community mirror program; declarative `.app` support; multi-user daemon if demand materializes; governance formalization.
+Two-builder reproducibility cross-checks; transparency log; community mirror program; `~/Applications` polish and GUI-app niceties; multi-user daemon if demand materializes; governance formalization.
 
 ---
 
@@ -605,7 +649,9 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 | 10.11-era testing hardware scarcity | Medium | VMs cover the full 10.11–12 matrix on the farm; v1 correctness additionally smoke-tested on a real Core 2 Duo when one is obtainable; the frozen platform means test images never churn |
 | ABI scanner false negatives (missed breakage) | Medium | Belt and suspenders: compat-version check + symbol fingerprint + reverse-dependency smoke tests in CI; when in doubt, rebuild dependents (we own the build farm) |
 | C++ vulnerability in aslice itself | Medium | §5.3 program: subset, hardening, sanitizers, fuzzing, tiny trust-critical helpers |
-| GPL/license compliance for hosted binaries | Low | Corresponding-source archive mirrored per license; SPDX SBOMs make compliance auditable |
+| Vendor binaries are opaque — no source SBOM, no reproducibility, the binary itself is trusted | Medium | Signer + hash pinning (silent substitution hard-fails); payload-only SBOM with full file list; `audit` binds CVEs via CPE; core tier barred unless redistributable + payload-only (§13.1); users told plainly what is and isn't verified (§10.7) |
+| Vendor pulls or mutates a `redistribute = false` artifact | Medium | Hash pin fails loudly rather than installing a different binary; the formula records last-known-good; community can negotiate redistribution or archive a licensed copy |
+| GPL/license compliance for hosted binaries | Low | Corresponding-source archive mirrored per license; SPDX SBOMs make compliance auditable; `redistribute = false` exists precisely for software we may not rehost |
 | Community adoption never materializes | Existential | Scope stays hobbyist-sustainable by design; worst case, the core orchard remains a maintained artifact for the installed base |
 
 **Open questions for early reviewers:**
@@ -614,6 +660,7 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 2. Starlark vs. a stricter pure-TOML-with-templates build DSL (Starlark chosen for expressiveness with hermeticity; the debate is real).
 3. Whether `abi = false` user-flag builds should share store paths with farm builds (current: yes, identity is identical — but provenance diverges; review wanted).
 4. ~~Telemetry~~ — **resolved (v0.3, sharpened v0.4): aslice collects no telemetry or analytics of any kind, ever.** No install IDs, no opt-in counters, no phone-home, no crash reporting — and no download-count-driven prioritization either, because volume mismeasures value on a platform where the rarest dependency may be the most irreplaceable (§9.4). The project is infrastructure, not a product, and its users — many on air-gapped audio rigs and lab machines — owe it no data. This is a charter-level commitment, not a tunable.
+5. Whether the project's canonical repository should host *any* `redistribute = false` formulae in core, or whether pointer-only packages should be extended-tier by definition (current: allowed in both, barred from core unless redistributable — but that makes core depend on license goodwill; review wanted).
 
 ---
 
@@ -627,6 +674,8 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 | User build flags | Removed from core | Yes (variants) | Yes (overlays) | **Yes — with ABI-aware interop** |
 | Mix binary + custom builds | Breaks assumptions | Works, all-local | Full rebuild cascade | **Contract-checked substitution** |
 | Install-time package code | Ruby `post_install` | Tcl phases | No | **None (declarative)** |
+| pkg/dmg-only vendor software | Casks (installer scripts may run) | Rare | Not the model | **Payload-only, signer-pinned, OS-tagged artifacts** |
+| Third-party binary distribution | Taps + bottles bolted on | No | Binary caches (trust via substituters) | **Repositories: signed, static, mirrorable, self-publishable** |
 | Rollback | No | No | Yes | **Yes (generations)** |
 | Repo integrity | git + partial attestations | rsync + signatures | Signed cache | **TUF + signed slices + transparency log** |
 | sudo in steady state | Some paths | `sudo port` | Daemon mode | **None** |
