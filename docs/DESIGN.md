@@ -2,8 +2,8 @@
 
 **Name.** *aslice* — an apple slice: a nod to the Macintosh apple and to the shape of the project itself. Binary packages are **slices**; formula repositories are **orchards**; the manager picks slices off the orchard, prebuilt or baked to order. The vocabulary is deliberately distinct from Homebrew's beer terminology to avoid community confusion and trademark friction. The project name is styled lowercase everywhere, including sentence starts — like the command.
 
-- **Status:** Design draft, v0.2 — September 2026
-- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support)
+- **Status:** Design draft, v0.3 — September 2026
+- **Change log:** v0.2 extends the platform floor from 10.15 (Catalina) to 10.11 (El Capitan) — see §4 for the consequences (three flavors, self-hosted toolchain in Phase 0, HFS+ support). v0.3 resolves open question #4: **aslice collects no telemetry or analytics of any kind, ever** — the project is infrastructure, not a product (§2.2 N7, §9.4, §15)
 - **Scope:** macOS 10.11 (El Capitan) through 12 (Monterey), Intel x86_64 only
 - **Implementation:** C++20 core, single self-contained binary
 - **Audience:** Maintainers, founding contributors, and early reviewers
@@ -73,6 +73,7 @@ Each clause is developed in its own section below.
 - **N4 — Linux/Windows.** The codebase should stay portable, but no effort is spent there.
 - **N5 — Replacing the system.** aslice never touches `/usr`, `/System`, or `/usr/local`'s ownership. It lives in its own prefix.
 - **N6 — 32-bit (i386).** Every Mac that can run 10.11 is 64-bit capable, so slices are x86_64-only. The 32-bit software that keeps many users on ≤10.14 is out of scope for the manager itself — aslice manages their 64-bit toolchain, not their legacy apps.
+- **N7 — Metrics.** No telemetry, analytics, install IDs, crash reporting, or usage instrumentation of any kind — not even opt-in. aslice is infrastructure, not a product. Prioritization signals come from maintainers and the community, never from users' machines (§9.4).
 
 ---
 
@@ -88,6 +89,7 @@ Homebrew's structural constraints — not its maintainers — produced its weakn
 | Prefix ownership of `/usr/local` chowned to the user | Security researchers have criticized this for a decade | Private prefix `/opt/aslice`, created once by an installer, never world-writable, never sudo thereafter (§10.4) |
 | Ruby runtime, git-cloned taps | Slow startup, slow `brew update` | Single C++ binary, content-addressed TUF-signed index with snapshot diffs (§11) |
 | CI hostage to GitHub-hosted Intel runners | The current collapse | **Self-hosted build farm on real Intel hardware** from day one (§9.3) |
+| Opt-out usage analytics | Consent assumed; users are a metrics pipeline | **No telemetry or analytics of any kind, ever** — aslice is infrastructure, not a product (§2.2 N7) |
 
 ---
 
@@ -326,7 +328,7 @@ aslice install ffmpeg --variant +x265 --cflags="-O3 -march=native" --lto
 
 - `--cflags`/`--ldflags`/`--lto`/`--debug` → local source build of **that package only**; dependencies still resolve to binaries when their contracts are satisfied. Flags are recorded in the manifest for provenance but **never** enter the build identity (§7.2) — the result remains a valid dependency for everything else on the machine.
 - `--variant ±x` where `x` is `abi = true` → new build identity; source build unless a matching slice exists (community orchards may publish popular non-default variants).
-- `--variant ±x` where `abi = false` → local build, same identity.
+- `--variant ±x` where `x` is `abi = false` → local build, same identity.
 - A package tree of user-flag builds is tracked (`aslice leaves --user-built`) and survives upgrades — the solver reuses the recorded flag set when a new version appears.
 
 ### 7.5 The solver
@@ -420,7 +422,7 @@ Estimated launch cost: under US$3,000 of used hardware plus power. This is the e
 
 - **Core orchard (~300 packages):** all three flavors where the formula's `min_os` allows (§4.1), default variants — the shell/git/curl/python/openssl/ffmpeg stratum.
 - **Extended orchard (~2,000 packages):** all flavors compatible with each formula's `min_os` floor, default variants, built on a rolling cadence.
-- **Popular non-default variants:** a small allowlist (e.g., `ffmpeg+x265+svt-av1`, `python+debug`) per flavor, driven by analytics-free opt-in telemetry of failed-slice lookups — i.e., the system notices what users keep compiling locally and starts prebuilding it.
+- **Popular non-default variants:** a small allowlist (e.g., `ffmpeg+x265+svt-av1`, `python+debug`) per flavor, chosen by maintainer judgment and community demand (orchard issues, request threads), informed only by the public aggregate download counts the hosting platform exposes anyway. There is no client-side signal — aslice collects no telemetry (§2.2 N7), so the system learns what to prebuild by *asking the community*, never by watching it.
 - Everything else: source builds, with the ABI contract guaranteeing the result still interops with the prebuilt world.
 
 ### 9.5 Build provenance
@@ -580,7 +582,7 @@ A declarative `.app` format (URL + hash + codesign/notarization expectations + q
 Solver with variants; store/profiles/generations; GHCR distribution; sandboxed builder; minisign slices; ~300-package core orchard, all flavors; `adopt --from-homebrew`; build farm Phase A + first self-hosted nodes.
 
 **Phase 2 — Differentiated (months 6–12)**
-ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; `aslice-toolchain` v2 (LLD-first linking, ccache integration); extended orchard to ~2,000 packages; popular-variant prebuilds driven by lookup telemetry; reproducible builds for core.
+ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; `aslice-toolchain` v2 (LLD-first linking, ccache integration); extended orchard to ~2,000 packages; popular-variant prebuilds chosen from community requests (§9.4); reproducible builds for core.
 
 **Phase 3 — Durable (year 2)**
 Two-builder reproducibility cross-checks; transparency log; community mirror program; declarative `.app` support; multi-user daemon if demand materializes; governance formalization.
@@ -607,7 +609,7 @@ Two-builder reproducibility cross-checks; transparency log; community mirror pro
 1. Default prefix (`/opt/aslice` vs `~/.aslice`-first). The name itself is settled: **aslice**.
 2. Starlark vs. a stricter pure-TOML-with-templates build DSL (Starlark chosen for expressiveness with hermeticity; the debate is real).
 3. Whether `abi = false` user-flag builds should share store paths with farm builds (current: yes, identity is identical — but provenance diverges; review wanted).
-4. Telemetry: the failed-slice-lookup signal (§9.4) is valuable for prioritizing prebuilds but must stay strictly opt-in and content-free. Design the exact mechanism in the open.
+4. ~~Telemetry~~ — **resolved (v0.3): aslice collects no telemetry or analytics of any kind, ever.** No install IDs, no opt-in counters, no phone-home, no crash reporting. The project is infrastructure, not a product, and its users — many on air-gapped audio rigs and lab machines — owe it no data. Prebuild prioritization (§9.4) runs on maintainer judgment, community requests, and the public aggregate download counts the hosting platform exposes regardless. This is a charter-level commitment, not a tunable.
 
 ---
 
