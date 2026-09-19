@@ -254,3 +254,379 @@ ffmpeg-7.1-0+core.v3.2f4a9c1e.spk
 ```
 
 Install of a `.spk` is: verify signature → verify payload hashes → extract into store path → ABI-check against the packages that will link to it → register in SQLite → link into profile. **No code from the package executes at any point.**
+
+---
+
+## 7. The Variant and ABI Model — Interoperability by Design
+
+This is the section that answers "package interoperability should still be available" and "what Homebrew could not." Homebrew's experience is the cautionary tale: options in `homebrew-core` were removed in 2019 because every variant combinatorially broke bottle assumptions and support load. Scrumpy's answer is to make the distinction Homebrew never formalized: **what changes the ABI versus what merely changes the bits.**
+
+### 7.1 The three kinds of build-time choice
+
+| Kind | Examples | Effect on identity | Effect on interop |
+|---|---|---|---|
+| **µarch flavor** | `v2` vs `v3` | Hard selection constraint | ABI-identical; v3 binaries just won't *run* on v2 CPUs |
+| **Optimization flags** | `-O2`/`-O3`, `-march=native`, LTO | **None** | ABI-identical by construction; freely substitutable |
+| **Feature variants** | `+x265`, `+ssl` vs `+gnutls`, `+shared` | Only when `abi = true` | Changes exported interface → tracked in the ABI contract |
+
+### 7.2 Build identity
+
+```
+build_id = base32(sha256(canonical_json({
+    name, version, revision,
+    abi_variants,          # only variants declared abi = true
+    flavor,                # v2 | v3
+    min_os,                # 10.15 | 11 | 12
+    toolchain_id,          # e.g. "clang-19-10.15"
+})))[:10]
+```
+
+Deliberately **absent** from the hash: `-O` level, `-march` beyond the flavor floor, debug info, build timestamps, build host. Two builds of the same formula with the same ABI variants are the *same identity* even if one was built by the build farm with `-O2` and one by the user with `-O3 -march=native`. They are interchangeable everywhere.
+
+Note what this does *not* do: it does not hash the dependency closure (the Nix model). Nix's approach gives perfect hermeticity at the cost of making substitution impossible whenever any dependency differs — exactly the interop failure the user wants to avoid. Scrumpy instead gets interop from the ABI contract below.
+
+### 7.3 The ABI contract (the Mach-O insight)
+
+macOS already ships the world's most underrated interop mechanism: **Mach-O install names with compatibility versions.** Every dylib records an install name and a `compatibility_version`/`current_version`; every client records what it linked against. dyld enforces it at load time. Scrumpy formalizes what the linker already knows:
+
+At build time, `scrumpy-build` runs an **ABI scan** on the staged output and records in the manifest:
+
+```json
+"abi": {
+  "provides": [
+    { "install_name": "@rpath/libavcodec.61.dylib",
+      "compatibility_version": "61.0.0",
+      "symbols_sha256": "9be4…",       # nm-derived symbol-set fingerprint
+      "arch": "x86_64" }
+  ],
+  "requires": [
+    { "install_name": "@rpath/libx264.164.dylib",
+      "min_compat": "164.0.0" }
+  ]
+}
+```
+
+Substitution rule: a package P satisfies dependency D iff P provides the required install name with `compatibility_version ≥ D.min_compat` **and** the symbol fingerprint covers D's referenced symbols. The scan uses `otool`/`nm` output plus DWARF-based ABI diffing (libabigail-style) for C++ packages, where symbol presence alone understates breakage.
+
+Consequences:
+
+- **Mix prebuilt and self-compiled freely.** Your `-O3 -march=native` ffmpeg and the build farm's `-O2` x264 interop because the contract, not the provenance, governs linking.
+- **Breakage is caught at install time, not at runtime** three weeks later. If a rebuilt library no longer covers what its clients reference, the solver refuses the combination and tells you exactly which symbol set regressed.
+- **`abi = true` variants partition the space correctly.** `ffmpeg+x265` and `ffmpeg-x265` are different build identities and can coexist in the store; dependents record which one they were linked against.
+
+### 7.4 User flags
+
+```
+scrumpy install ffmpeg --variant +x265 --cflags="-O3 -march=native" --lto
+```
+
+- `--cflags`/`--ldflags`/`--lto`/`--debug` → local source build of **that package only**; dependencies still resolve to binaries when their contracts are satisfied. Flags are recorded in the manifest for provenance but **never** enter the build identity (§7.2) — the result remains a valid dependency for everything else on the machine.
+- `--variant ±x` where `x` is `abi = true` → new build identity; source build unless a matching flagon exists (community taps may publish popular non-default variants).
+- `--variant ±x` where `abi = false` → local build, same identity.
+- A package tree of user-flag builds is tracked (`scrumpy leaves --user-built`) and survives upgrades — the solver reuses the recorded flag set when a new version appears.
+
+### 7.5 The solver
+
+Version+variant resolution uses a PubGrub-style CDCL algorithm:
+
+- **Terms** are (package, version-range, variant-assignment, flavor).
+- **Flavor is a hard constraint** injected from hardware detection — a v3 flavor on a v2 machine is a conflict at solve time with a clear message, never a SIGILL at runtime.
+- **Binary-first preference:** among valid solutions, the solver maximizes use of available flagons (objective: minimize local builds, then minimize download size, then maximize versions). `--prefer-source` flips the objective.
+- **Deterministic and explainable:** every resolution emits a human-readable derivation tree (`scrumpy install --explain ffmpeg` shows why each version/variant was chosen). Solve results are cached in SQLite keyed by index snapshot hash; typical repeated solves are sub-millisecond.
+
+The variant domain per package is small by policy (§13.2 limits `abi = true` variants to what maintainers will support), so the combinatorial explosion that killed Homebrew options stays boxed in.
+
+---
+
+## 8. Store, Profiles, and Generations
+
+### 8.1 Layout
+
+```
+/opt/scrumpy/
+ ├── store/
+ │    ├── ffmpeg-7.1-0+core.v3.2f4a9c1e/
+ │    ├── ffmpeg-7.1-0+core.v2.2f4a9c1e/        # flavors coexist
+ │    ├── x264-0.164-0+core.v3.77aa10b2/
+ │    └── …
+ ├── profiles/
+ │    ├── default -> generations/42             # symlink; the live view
+ │    └── generations/
+ │         ├── 41/  { bin/, lib/, share/, … }   # symlink forests into store
+ │         └── 42/
+ ├── cache/        # flagons, sources, index snapshots
+ ├── db/state.sqlite
+ └── etc/scrumpy.toml
+```
+
+- **Store paths are immutable.** Nothing inside a store path is ever modified after registration; corruption is detectable by re-hashing against the manifest.
+- **Install names use absolute store paths** for libraries whose manifest marks them non-relocatable, and `@rpath` with a managed rpath list for the rest. Because the default prefix is fixed (`/opt/scrumpy`), the overwhelmingly common case needs **zero path rewriting** — no bottle-relocation pass at install, which is both faster and removes a whole class of tampering surface. Custom prefixes are supported via manifest-recorded relocation metadata (the same approach Homebrew 7.0 adopted), applied by the link helper at install time.
+- **Per-user installs** (`~/.scrumpy` as prefix) are fully supported with rewriting; multi-user shared installs work because profiles, not ownership, define the view.
+
+### 8.2 Profiles as the interoperability surface
+
+A profile is the merged symlink forest (bin/, lib/, share/, …) that users put on PATH: `/opt/scrumpy/profiles/default/bin`. Because linking is just symlink creation into a generation directory, any combination of store paths — prebuilt, user-compiled, different flavors, old and new versions of different packages — coexists under one view. Collisions (two packages shipping `bin/foo`) are first-class: the profile records priority, and `scrumpy profile prefer` flips it without touching the store.
+
+### 8.3 Generations: atomic switching and rollback
+
+Every mutating operation builds a **new generation directory** and then swaps one symlink — atomic on APFS. This yields, almost for free:
+
+- `scrumpy rollback [generation]` — instant return to any previous state.
+- `scrumpy switch-generation 38` — bisect a broken upgrade in seconds.
+- **Interrupted installs cannot corrupt the live profile.** A crash mid-install leaves the old generation live; the partial new generation is garbage-collected.
+- `scrumpy gc` removes store paths unreachable from any retained generation (with `--older-than 30d` style policies).
+
+### 8.4 Garbage collection discipline
+
+The store grows unboundedly without GC — the classic Nix complaint. Defaults: keep the last 5 generations, auto-GC on install when store exceeds a configurable watermark (default 20 GB), and never collect a store path referenced by a running process's profile generation. `scrumpy gc --dry-run` always shows exactly what would go and why.
+
+---
+
+## 9. Distribution and the Build Farm
+
+### 9.1 Hosting on GitHub — two layers, mirror-friendly
+
+**Layer 1: Package blobs as OCI artifacts on GHCR.** Flagons are pushed to `ghcr.io/scrumpy/<name>` as OCI artifacts (ORAS), giving content-addressed blob storage, dedup across versions via shared layers, resumable/ranged downloads, and free bandwidth within GitHub's generous registry limits. Every tag is additionally anchored to a signed manifest digest.
+
+**Layer 2: The index as static, signed files.** The package index (TUF metadata + zstd JSON snapshots) is published both to a GitHub Release asset stream and to `raw`/Pages endpoints, and — critically — is *trivially mirrorable*: any static HTTP server can host a complete Scrumpy repo. Mirror support is a first-class config (`mirrors = [...]`), not an afterthought, because the long-term health of a legacy-platform project cannot depend on one vendor's continued generosity.
+
+**Fallback:** plain GitHub Releases assets (2 GB per asset ceiling — no package comes close) for environments where GHCR auth/rate limits are a problem. The client treats GHCR, Releases, and static mirrors as interchangeable transports for identical, identically-signed content.
+
+### 9.2 The GitHub CI problem — stated plainly
+
+GitHub-hosted Intel runners are a deprecating asset: `macos-11`/`macos-12` images are already retired, and the `macos-13` Intel image follows in autumn 2027. **Any design whose correctness depends on hosted Intel CI is a dead design.** Scrumpy therefore treats GitHub CI as a convenience layer and the self-hosted farm as the system of record.
+
+### 9.3 The build farm
+
+**Phase A (launch):** GitHub-hosted `macos-13` Intel runners, while they exist, cross-targeting Catalina: Xcode 12.4 CLT toolchain cached on the runners, `MACOSX_DEPLOYMENT_TARGET=10.15`. AVX2 (`v3`) builds compile fine on any Intel runner (compiling AVX2 code doesn't require executing it); *tests* for v3 flagons run on AVX2 hardware only, and v2 flagons test everywhere.
+
+**Phase B (the durable answer): self-hosted runners on real hardware**, enrolled as GitHub Actions self-hosted runners (or Buildkite/Forgejo runners if GitHub's self-hosted macOS story degrades):
+
+| Role | Hardware | Notes |
+|---|---|---|
+| `v2` builder + tester | Mac Pro 2013 or Mac mini 2012 (Ivy Bridge) | The exact no-AVX2 population |
+| `v3` builder + tester | Mac mini 2018 (Coffee Lake) — cheap, ECC-less but reliable, AVX2 | Workhorse; 2–4 units |
+| OS coverage | VMware Fusion / Parallels VMs: 10.15, 11, 12 guests | Apple's license permits macOS VMs on Apple hardware; one Mac mini 2018 hosts all three OS images |
+| Signing | Offline root key; online signing key on an air-gapped-adjacent Mac mini with YubiKey-backed key custody | §10.2 |
+
+Estimated launch cost: under US$3,000 of used hardware plus power. This is the entire reason the project is feasible at hobbyist scale: **the platform is frozen.** No new macOS releases to chase, no new SDK churn, no Apple-silicon treadmill. The farm builds against a fixed target forever, and volunteer effort goes to packages, not platform firefighting. This inverts the dynamic that exhausted Homebrew's maintainers.
+
+### 9.4 What gets prebuilt
+
+- **Core tap (~300 packages):** both flavors, default variants — the shell/git/curl/python/openssl/ffmpeg stratum.
+- **Extended tap (~2,000 packages):** both flavors, default variants, built on a rolling cadence.
+- **Popular non-default variants:** a small allowlist (e.g., `ffmpeg+x265+svt-av1`, `python+debug`) per flavor, driven by analytics-free opt-in telemetry of failed-flagon lookups — i.e., the system notices what users keep compiling locally and starts prebuilding it.
+- Everything else: source builds, with the ABI contract guaranteeing the result still interops with the prebuilt world.
+
+### 9.5 Build provenance
+
+Every flagon ships a SLSA-style provenance attestation in its manifest: builder identity, source hash, formula git commit, toolchain ID, build environment digest, and (phase 3) reproducibility status. `scrumpy provenance ffmpeg` shows it. Reproducible-build verification — rebuilding on a second, independent builder and bit-comparing — starts with the core tap and extends outward; flagons that verify get a `reproducible: true` badge in the index.
+
+---
+
+## 10. Security Model
+
+The bar: be measurably better than Homebrew's model, on the same machine, without asking users to change how they work. Homebrew's model, fairly stated: formulae are executable Ruby fetched from git repos; taps are trusted wholesale; binary installs run `post_install` code; the installer chowns `/usr/local`; and signing/attestation arrived late and partially. Scrumpy's model is built from the following load-bearing decisions.
+
+### 10.1 Declarative packages, hermetic builds
+
+- Formula *metadata* is TOML — pure data, validated against a schema, rejected on unknown fields.
+- Formula *logic* is Starlark executed in the build sandbox with a capability-only API (`ctx.run`, `ctx.make`, `ctx.env`) — no filesystem access outside the build dir, no network, no subprocess outside the declared toolchain, deterministic by construction.
+- **Binary installs execute no package code whatsoever.** There is no `post_install`. Data-directory creation, launch-agent registration, and shell-completion placement are declarative manifest entries applied by Scrumpy's own code. This removes the single largest supply-chain surface in the Homebrew model: arbitrary maintainer Ruby running on every install.
+
+### 10.2 Signatures and repository integrity (TUF)
+
+- **Metadata:** the index is wrapped in [The Update Framework](https://theupdateframework.io/) — offline root key (threshold, YubiKey custody), short-lived online snapshot/timestamp keys, targets key on the signing host. This gives rollback, freeze, and mix-and-match attack protection — the failure modes that plain "signed packages" miss.
+- **Packages:** every flagon is signed (minisign-compatible format, Ed25519; cosign-compatible verification for the OCI layer). Signature verification happens **before extraction**, and the verified manifest is what the linker consumes.
+- **Sources:** every source tarball hash is pinned in the formula *and* countersigned in the index; `fetch` verifies against both.
+- **Key compromise response:** root key is 3-of-5 threshold across founding maintainers; revocation and rotation is a practiced runbook, not a hope.
+
+### 10.3 Trust bootstrapping
+
+The installer is a small, auditable shell script that fetches exactly two things — the `scrumpy` bootstrap binary and the TUF root metadata — each pinned by hash in the script *and* cross-checkable against a signed checksums file on a second transport (Release asset + Pages). Everything after that first step is verified by TUF. The script never runs `sudo` except, optionally, to create `/opt/scrumpy` and chown it to the invoking user — once.
+
+### 10.4 Privilege discipline
+
+- **No sudo in steady state.** Not for install, not for upgrade, not for uninstall. The prefix is user-owned from creation.
+- **Never touches `/usr/local`.** Coexistence with Homebrew/MacPorts is by construction, and the historic `/usr/local` ownership flaw is simply not inherited.
+- **No setuid binaries, no helper daemon at launch.** A future multi-user mode (shared lab machines) will use a launchd daemon that accepts only TUF-verified operation plans over a local socket with peer-credential checks — designed, but gated behind demand.
+
+### 10.5 Sandboxed builds
+
+Every build phase runs under a Seatbelt (`sandbox-exec`) profile, which is present and functional across 10.15–12:
+
+| Phase | Profile |
+|---|---|
+| fetch | Network to declared hosts only; write to cache dir only |
+| unpack/patch/configure/build | **No network at all**; write only within the build dir; read-only toolchain and store |
+| install (to staging) | No network; write to staging dir only |
+| test | No network by default; opt-in `test_network = true` per formula, loudly logged |
+
+Seatbelt is deprecated by Apple but present through the entire target window; the profile abstraction (`SandboxPolicy` compiled to Seatbelt today) is designed so a future backend can replace it without touching formulae. A build that escapes its profile fails the build and files an automatic audit event.
+
+### 10.6 Vulnerability and SBOM pipeline
+
+- Every flagon embeds an **SPDX SBOM** generated from the build manifest (sources, patches, dependency closure, toolchain).
+- `scrumpy audit` matches the installed set against OSV/GitHub Advisory feeds and reports CVEs with affected-version ranges — locally, offline-capable with a cached feed.
+- Formulae declare upstream security-contact and EOL policy; packages past upstream EOL are surfaced in `audit` and require `--allow-eol` to install.
+
+### 10.7 What this does not solve (honesty section)
+
+- A malicious *core maintainer* with signing access can still ship bad flagons; threshold keys, reproducible-build cross-checks (§9.5), and a public transparency log of index snapshots are the mitigations, and they reduce but do not eliminate insider risk.
+- Sandboxing contains *builds*, not the runtime behavior of installed software. Scrumpy is a package manager, not an endpoint product.
+- C++ memory-safety risk in Scrumpy itself is managed per §5.3; the parsers and extractors — the untrusted-input surfaces — get the fuzzing and the smallest footprints.
+
+---
+
+## 11. Performance Model
+
+Performance goals with concrete mechanisms:
+
+| Goal | Mechanism |
+|---|---|
+| **CLI startup < 10 ms** | Single Mach-O binary, static libc++, no interpreter, no JIT, lazy dyld binding, no network on the hot path |
+| **`install` of a cached flagon < 300 ms** | Verify (Ed25519: microseconds) → zstd decompress → APFS `clonefile` into store → symlink generation swap. No relocation pass on default prefix. |
+| **Index update < 200 ms typical** | Snapshot diffs against a cached snapshot hash — a few KB on a typical day, versus Homebrew's git-fetch taps |
+| **Solve < 50 ms typical** | SQLite-backed package index with prepared statements; PubGrub with clause caching; memoized per snapshot |
+| **Downloads saturate the pipe** | HTTP/2 multiplexing, 8-way parallel fetches, resumable ranges, zstd `--long` delta-friendly payloads |
+| **Cold full install of a large tree (e.g., `ffmpeg` closure) < 10 s on SSD** | Parallel fetch + pipeline overlap (decompress stream N+1 while linking N) |
+| **Builds: near-zero manager overhead** | The builder's job is to get out of the way: Ninja parallelism, `ccache`-compatible compiler cache in `cache/`, tmpfs-backed build dir when RAM allows |
+
+The deeper performance win is architectural: **flavor targeting.** A v3 ffmpeg/x264/openssl on a Haswell+ machine is measurably faster than the lowest-common-denominator binaries legacy platforms ship — crypto, codecs, and compression see the largest gains. Scrumpy is likely the only macOS package manager that serves AVX2 binaries as a first-class default rather than an accident.
+
+---
+
+## 12. CLI and User Experience
+
+### 12.1 Commands
+
+```
+scrumpy install ffmpeg                  # binary-first; flavor auto-detected
+scrumpy install ffmpeg --build-from-source
+scrumpy install ffmpeg --variant +x265 --cflags="-O3 -march=native"
+scrumpy install ffmpeg@v6               # version pinning
+scrumpy upgrade / scrumpy upgrade ffmpeg
+scrumpy uninstall x264 / scrumpy autoremove
+scrumpy search / info / leaves / why <pkg>
+scrumpy flavors ffmpeg                  # show the prebuilt matrix for this machine
+scrumpy provenance ffmpeg               # builder, source hash, SLSA attestation
+scrumpy audit                           # CVE report for the installed set
+scrumpy rollback / switch-generation / history
+scrumpy gc [--dry-run] [--older-than 30d]
+scrumpy tap add myorg/tap / tap pin myorg/tap <commit>
+scrumpy adopt --from-homebrew           # migration assistant (§13.3)
+scrumpy config set flavor v2            # overrides
+scrumpy doctor                          # environment sanity, loudly honest
+```
+
+### 12.2 Interaction principles
+
+- **Binary is the default, source is a flag.** A user who never passes `--variant` or `--cflags` never sees a compiler.
+- **Every decision is explainable.** `--explain` on any command shows the solver's derivation; `--dry-run` shows the exact plan: which flagons, which local builds, which generation change.
+- **Loud honesty.** EOL packages, unsigned taps, deprecated variants, and fallback-to-source events are announced, not buried. `doctor` reports Tier-style truth about the machine rather than pretending uniformity.
+- **Scriptable:** `--json` on everything; stable exit-code contract; machine-readable `plan`/`apply` split (`scrumpy plan install ffmpeg > plan.json && scrumpy apply plan.json`) — which is also what the future multi-user daemon consumes.
+
+### 12.3 Taps and trust levels
+
+Taps are git repos of formula directories, but trust is explicit:
+
+- **Core/extended:** signed by project keys; Starlark + TOML only.
+- **Third-party taps:** installed disabled by default; enabling one prints its trust implications (its formulae can cause local source builds — sandboxed — but *never* execute at binary-install time, because nothing ever does). Third-party taps can distribute their own signed flagons under their own TUF keys; the client records per-tap key pins.
+
+### 12.4 GUI apps (later)
+
+A declarative `.app` format (URL + hash + codesign/notarization expectations + quarantine handling) is reserved in the schema. It deliberately executes no install scripts — `.app` delivery is copy-and-verify — and is out of launch scope.
+
+---
+
+## 13. Policies, Governance, and Migration
+
+### 13.1 Package acceptance policy
+
+- Core tap: maintained, security-patched, reproducible-build targets; no package enters without a working `tests.star` smoke test on at least one OS × one flavor.
+- Upstream-EOL software: allowed in extended with `eol = true` metadata; excluded from core.
+- No packages that require disabling SIP, installing kexts, or patching system files. Ever. This is a hard line and a marketing feature.
+
+### 13.2 Variant discipline
+
+`abi = true` variants are capped per package (guideline: ≤ 6) and each must justify its existence in review. This keeps the solver space small, the prebuilt matrix tractable, and avoids repeating the option-sprawl that made Homebrew variants unmaintainable. `abi = false` (build-flavor) variants are unconstrained — they cost the project nothing because they never spawn binary flavors.
+
+### 13.3 Coexistence and migration from Homebrew
+
+- **Coexistence:** Scrumpy lives in `/opt/scrumpy`, never touches `/usr/local`, and `doctor` detects a Homebrew installation and advises on PATH ordering rather than conflicting.
+- **`scrumpy adopt --from-homebrew`:** reads Homebrew's Cellar and `brew leaves`, maps names to Scrumpy formulae (with a maintained alias table for renames), produces an install plan that recreates the same leaf set — including mapping old `--with-*` Homebrew options to Scrumpy variants where an alias exists. It does not attempt binary reuse of Homebrew's Cellar (different prefix assumptions); it reuses the *intent*.
+- **Formula importer (for tap authors):** a tool that mechanically translates simple Homebrew Ruby formulae — `url`/`sha256`/`depends_on`/standard `configure && make` bodies — into TOML+Starlark drafts, with a human review step. Realistic coverage target: the simple ~60–70% of formulae; the rest are ports, not translations.
+
+### 13.4 Governance
+
+- Benevolent-core-team start: 3–5 founding maintainers holding threshold keys; decisions by lazy consensus, escalations by vote.
+- Tap PR review backed by CI that *builds the package in the sandbox on both flavors* — review is about correctness and policy, never "does it compile."
+- Public roadmap, public build-farm dashboard, public transparency log. A legacy-platform project survives on trust, and trust survives on visibility.
+- Funding: GitHub Sponsors/OpenCollective for build-farm hardware and power; costs are low and fixed (§9.3) precisely because the platform is frozen.
+
+---
+
+## 14. Roadmap
+
+**Phase 0 — Foundations (months 0–3)**
+C++ core skeleton: CLI, SQLite state, TUF client, zstd, Mach-O/otool wrappers. Bootstrap binary builds on Catalina with Xcode 12.4 and runs on 10.15/11/12 (tested in VMs). Core tap seeded with ~30 packages (curl, git, openssl, python, zstd, cmake, ninja) built on real hardware.
+
+**Phase 1 — Usable (months 3–6)**
+Solver with variants; store/profiles/generations; GHCR distribution; sandboxed builder; minisign flagons; ~300-package core tap, both flavors; `adopt --from-homebrew`; build farm Phase A + first self-hosted nodes.
+
+**Phase 2 — Differentiated (months 6–12)**
+ABI scanner with DWARF diffing; SBOM + `audit`; SLSA provenance; self-hosted `scrumpy-toolchain`; extended tap to ~2,000 packages; popular-variant prebuilds driven by lookup telemetry; reproducible builds for core.
+
+**Phase 3 — Durable (year 2)**
+Two-builder reproducibility cross-checks; transparency log; community mirror program; declarative `.app` support; multi-user daemon if demand materializes; governance formalization.
+
+---
+
+## 15. Risks and Open Questions
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| GitHub degrades self-hosted macOS runner support or GHCR terms change | High | Mirror-first index design (§9.1); Buildkite/Forgejo runner portability; static-mirror escape hatch means GHCR is replaceable |
+| Apple removes Seatbelt in a future macOS | Low for scope | Target window is 10.15–12 — frozen releases where Seatbelt is present; the policy abstraction isolates the backend regardless |
+| Xcode/CLT availability for 10.15-targeted builds | Medium | Xcode 12.4 archived and cached; self-hosted toolchain (Phase 2) ends CLT dependence for package builds; Catalina-era SDK usage on builders is within Apple's license on Apple hardware |
+| Volunteer burnout (the Homebrew lesson) | High | Frozen platform = fixed workload; automation-first tap CI; small core tap with quality bar; explicit scope refusal (no Apple Silicon, no new macOS) |
+| Signing-key compromise | Medium | Threshold offline root, YubiKey custody, practiced rotation runbook, transparency log for detection |
+| ABI scanner false negatives (missed breakage) | Medium | Belt and suspenders: compat-version check + symbol fingerprint + reverse-dependency smoke tests in CI; when in doubt, rebuild dependents (we own the build farm) |
+| C++ vulnerability in Scrumpy itself | Medium | §5.3 program: subset, hardening, sanitizers, fuzzing, tiny trust-critical helpers |
+| GPL/license compliance for hosted binaries | Low | Corresponding-source archive mirrored per license; SPDX SBOMs make compliance auditable |
+| Community adoption never materializes | Existential | Scope stays hobbyist-sustainable by design; worst case, the core tap remains a maintained artifact for the installed base |
+
+**Open questions for early reviewers:**
+
+1. Final name and prefix (`/opt/scrumpy` vs `~/.scrumpy`-first default).
+2. Starlark vs. a stricter pure-TOML-with-templates build DSL (Starlark chosen for expressiveness with hermeticity; the debate is real).
+3. Whether `abi = false` user-flag builds should share store paths with farm builds (current: yes, identity is identical — but provenance diverges; review wanted).
+4. Telemetry: the failed-flagon-lookup signal (§9.4) is valuable for prioritizing prebuilds but must stay strictly opt-in and content-free. Design the exact mechanism in the open.
+
+---
+
+## Appendix A. Comparison Summary
+
+| | Homebrew (Intel, 2026) | MacPorts | Nix | **Scrumpy** |
+|---|---|---|---|---|
+| 10.15–12 Intel support | Tier 3 → removed 2027 | Partial, best-effort | Degrading | **First-class, the whole point** |
+| Prebuilt binaries | Frozen legacy bottles | Sparse | x86_64-darwin cache shrinking | **v2 + v3 flavors, default path** |
+| µarch targeting | No | No | No | **AVX2 flavor first-class** |
+| User build flags | Removed from core | Yes (variants) | Yes (overlays) | **Yes — with ABI-aware interop** |
+| Mix binary + custom builds | Breaks assumptions | Works, all-local | Full rebuild cascade | **Contract-checked substitution** |
+| Install-time package code | Ruby `post_install` | Tcl phases | No | **None (declarative)** |
+| Rollback | No | No | Yes | **Yes (generations)** |
+| Repo integrity | git + partial attestations | rsync + signatures | Signed cache | **TUF + signed flagons + transparency log** |
+| sudo in steady state | Some paths | `sudo port` | Daemon mode | **None** |
+| Startup / solve speed | Ruby, seconds-scale | Moderate | Slow eval | **<10 ms / <50 ms** |
+
+## Appendix B. References
+
+- Homebrew 7.0.0 release notes (Intel → Tier 3, 10.15 removal, September 2026): https://brew.sh/2026/09/13/homebrew-7.0.0/
+- Homebrew Support Tiers (Intel bottle cessation; removal in/after September 2027): https://docs.brew.sh/Support-Tiers
+- Homebrew discussion: Intel CI disabled, "no bottle available" (September 2026): https://github.com/orgs/Homebrew/discussions/7044
+- Homebrew Monterey deprecation discussion: https://github.com/orgs/Homebrew/discussions/5603
+- Homebrew history/version table: https://en.wikipedia.org/wiki/Homebrew_(package_manager)
+- macOS 27 Golden Gate drops Intel (Apple's platform trajectory): https://eshop.macsales.com/blog/98631-macos-27-golden-gate-drops-intel-support-heres-how-to-find-out-if-youre-affected/
+- The Update Framework: https://theupdateframework.io/
+- x86-64 psABI microarchitecture levels: https://gitlab.com/x86-psABIs/x86-64-ABI
