@@ -176,6 +176,8 @@ The user-facing case for C++ is startup time, single-binary deployment across 10
 
 ### 6.1 Formulae are data, with a hermetic build script
 
+*The authoritative schema is [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md); this section is the guided tour.*
+
 An aslice package is a directory in an orchard — a git repo of formula directories (what Homebrew calls a *tap*):
 
 ```
@@ -217,7 +219,7 @@ runtime = ["x264", "x265?variant.x265", "lame", "opus", "srt"]
 build   = ["nasm", "pkgconf"]
 ```
 
-`build.star` (Starlark: deterministic, no network, no filesystem outside the build dir, no `eval`):
+`build.star` (Starlark: deterministic, no network, no filesystem access outside the build dir, no `eval`):
 
 ```python
 def configure(ctx):
