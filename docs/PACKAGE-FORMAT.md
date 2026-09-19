@@ -1,6 +1,7 @@
 # aslice Package Format
 
-**Status:** Format draft, v0.1 — September 2026
+**Status:** Format draft, v0.2 — September 2026
+**Change log:** v0.2 adds **vendor binary packages** — `type = "binary"`, `[[binary]]` artifacts with per-OS support tags, declarative payload maps, and mandatory signer pinning (§3.11); lock-file `origin` gains `"vendor-direct"` (§7.2)
 **Companion to:** [DESIGN.md](DESIGN.md) — this document is the authoritative specification for §6 (Package Format). Where they disagree, this document wins.
 **Scope:** the `package.toml` definition format, `build.star` build API, dependency and version semantics, transitive resolution, and lock files.
 
@@ -17,6 +18,7 @@ If you know npm's `package.json`, you know the shape of this format — and you 
 | `package-lock.json` | `aslice.lock`, first-class and machine-aware (§7) | Locks record µarch flavor — a dimension npm doesn't have |
 | `dependencies` / `devDependencies` | `runtime` / `build` / `test`, plus **conditional** dependencies (§5.3) | Native builds have three distinct dependency lifecycles |
 | Anything goes in unknown fields | Schema-validated, unknown fields **rejected** | Silent typos in package metadata are a real supply-chain bug class |
+| Prebuilt native addons via `node-gyp`/prebuild-install (untyped blobs) | **Vendor binaries are first-class, typed packages** with OS-support tags and pinned signers (§3.11) | Half the software worth having on this platform will never be buildable from source |
 
 The format is **data first**: `package.toml` is pure TOML, validatable without executing anything. Build *logic*, where needed, lives in a separate hermetic Starlark file that runs only inside the build sandbox (DESIGN §10.5).
 
@@ -34,6 +36,8 @@ orchards/core/ffmpeg/
 ```
 
 Directory name **must** equal `package.name`. One directory = one package lineage (all versions of `ffmpeg` live in one formula; the orchard git history is the version history).
+
+A `type = "binary"` package (§3.11) is `package.toml` **alone** — no `build.star`, no patches; there is nothing to build and nothing to patch.
 
 ---
 
@@ -66,7 +70,8 @@ tier         = "core"           # core | extended
 | `version` | yes | Normalized aslice version (§4); stored normalized, not verbatim-upstream |
 | `revision` | yes | Integer ≥ 0; resets to 0 on any `version` change; bumped for packaging-only changes |
 | `epoch` | no | Integer ≥ 0, default 0; §4.4 |
-| `license` | yes | SPDX expression; `LicenseRef-` for unlisted licenses |
+| `license` | yes | SPDX expression; `LicenseRef-` for unlisted licenses (vendor freeware: `LicenseRef-Proprietary`) |
+| `type` | no | `"build"` (default) or `"binary"` — vendor pkg/dmg packages, §3.11 |
 | `min_os` / `max_os` | no | §3.2 |
 | `flavors` | no | §3.3 |
 | `eol` / `deprecated` | no | Booleans; surfaced loudly by `audit` and at install time |
@@ -82,6 +87,7 @@ max_os = "12"       # optional; omit unless upstream genuinely breaks on newer
 - `min_os` sets the package's deployment target **and** its index visibility: a 10.11 machine simply never sees packages with `min_os = "10.12"` — filtered at solve time with an explicit "requires macOS ≥ 10.12" message, never a runtime surprise.
 - The value is one of `"10.11"`, `"10.12"`, `"10.13"`, `"10.14"`, `"10.15"`, `"11"`, `"12"` — the supported window, verbatim.
 - Honesty rule (DESIGN §4.1): declare the real floor. Do not contort a build to claim 10.11.
+- For `type = "binary"` packages, `[[binary]]` entries carry their own bounds per artifact (§3.11); the `[package]` values are the defaults they inherit.
 
 ### 3.3 `flavors` — minimum instruction set
 
@@ -93,6 +99,7 @@ flavors = ["v2", "v3"]    # omit → all of ["v1", "v2", "v3"]
 - A package that genuinely requires AVX2 (e.g., hand-written AVX2 kernels without a dispatch fallback) declares `flavors = ["v3"]` and the farm skips its `v1`/`v2` slices; v1/v2 machines get a clear solve-time message.
 - The toolchain injects the flavor's `-march=x86-64-vN` floor automatically (§6.3); formula authors never write `-march` themselves. User `-march=native` requests layer on top at install time (DESIGN §7.4) without touching identity.
 - `min_os` and `flavors` are orthogonal and both part of the build identity (DESIGN §7.2).
+- Meaningless for `type = "binary"` (nothing is compiled — the vendor chose the ISAs); the field is rejected there. Vendor binaries serve all flavors by construction.
 
 ### 3.4 `[[source]]` — where the bits come from
 
@@ -143,6 +150,7 @@ requires    = []                      # optional: variant prerequisites
 
 - `abi = true` variants are capped at 6 per package by policy (DESIGN §13.2) and each must name, in `description`, the interface it changes.
 - Variants may carry their own platform bounds: `min_os = "10.13"`, `flavors = ["v2", "v3"]` inside a `[variants.*]` table narrow that variant's availability.
+- Rejected on `type = "binary"` packages — a vendor artifact has no build-time switches.
 
 ### 3.6 `[depends]` — dependencies
 
@@ -159,7 +167,7 @@ build   = ["nasm ^2.16", "pkgconf"]
 test    = ["ffprobe-selftest"]
 ```
 
-Full dependency semantics in §5.
+Full dependency semantics in §5. `build` and `test` dependencies are rejected on `type = "binary"` packages; `runtime` is valid (a vendor tool can legitimately need aslice's openssl).
 
 ### 3.7 Interop declarations — provides, conflicts, replaces
 
@@ -206,7 +214,7 @@ eol      = false
 eol_date = "2027-03-01"                # optional upstream EOL announcement
 ```
 
-`aslice audit` joins installed packages against OSV/GitHub Advisory data via CPE and name aliases. Packages with `eol = true` require `--allow-eol` to install and are excluded from the core orchard (DESIGN §13.1).
+`aslice audit` joins installed packages against OSV/GitHub Advisory data via CPE and name aliases. Packages with `eol = true` require `--allow-eol` to install and are excluded from the core orchard (DESIGN §13.1). Vendor binaries should carry a `cpe` whenever one exists — they are opaque to source-level analysis, so feed matching is the whole safety net.
 
 ### 3.10 `[build]` — the declarative build shortcut
 
@@ -216,7 +224,70 @@ system = "cmake"                        # autotools | cmake | meson | cargo | go
 args   = ["-DENABLE_GPL=ON", "-DENABLE_LIBX265=ON"]
 ```
 
-If `system` is one of the known build systems, **no `build.star` is needed** — aslice runs the canonical phase sequence (configure with the system-typical flags, parallel build, DESTDIR install, then the ABI scan). `system = "custom"` requires `build.star` (§6). An autotools hello-world formula is literally `[package]` + `[[source]]` + `[build] system = "autotools"`.
+If `system` is one of the known build systems, **no `build.star` is needed** — aslice runs the canonical phase sequence (configure with the system-typical flags, parallel build, DESTDIR install, then the ABI scan). `system = "custom"` requires `build.star` (§6). An autotools hello-world formula is literally `[package]` + `[[source]]` + `[build] system = "autotools"`. Forbidden on `type = "binary"` — there is no build.
+
+### 3.11 `[[binary]]` — vendor binaries (pkg/dmg-only software)
+
+Some software will never exist as buildable source for this platform — vendor CLIs, commercial audio tools, frozen releases of abandoned apps. It enters the ecosystem as a **vendor binary package**: a `package.toml`-only formula describing one or more vendor artifacts, each tagged with the OS releases it supports.
+
+```toml
+spec = 1
+
+[package]
+name    = "vendorcli"
+type    = "binary"
+version = "3.2.1"
+license = "LicenseRef-Proprietary"
+description = "Vendor's signal-routing CLI"
+homepage = "https://vendor.example/vendorcli"
+maintainers = ["alice <alice@example.com>"]
+tier = "extended"
+
+[[binary]]                              # one entry per vendor artifact; solver picks by tags
+url       = "https://vendor.example/vendorcli-3.2.1-legacy.pkg"
+sha256    = "aa11…"
+format    = "pkg"                       # pkg | dmg
+min_os    = "10.11"                     # artifact-level bounds; override [package] defaults
+max_os    = "10.13"                     # vendor's legacy build genuinely stops at 10.13
+arch      = ["x86_64"]
+signer    = "Developer ID Application: Vendor Inc. (ABCD1234)"   # pinned; change = hard fail
+notarized = true
+redistribute = false                    # license forbids rehosting: clients fetch vendor URL
+
+[[binary]]                              # the vendor's current build, for newer machines
+url       = "https://vendor.example/vendorcli-3.2.1.pkg"
+sha256    = "bb22…"
+format    = "pkg"
+min_os    = "10.14"
+arch      = ["x86_64"]
+signer    = "Developer ID Application: Vendor Inc. (ABCD1234)"
+notarized = true
+redistribute = false
+
+[[binary.payload]]                      # declarative extraction map — scripts never run
+from = "usr/local/bin/vendorcli"        # path inside the pkg Payload
+to   = "bin/vendorcli"
+
+[[binary.payload]]                      # a .app payload installs under <prefix>/apps/
+from = "VendorCLI Helper.app"
+to   = "apps/VendorCLI Helper.app"
+
+[install]
+notes = ["vendorcli looks for its license file in ~/Library/Application Support/VendorCLI"]
+
+[depends]
+runtime = ["openssl ^3.0"]              # vendor binaries may depend on aslice packages
+```
+
+Rules:
+
+- **`type = "binary"` forbids `[build]`, `build.star`, `[[patch]]`, `[[source]]`, `[variants]`, and `build`/`test` dependencies.** Nothing is compiled, nothing is patched. The pipeline compresses to `fetch → verify (hash + signer) → extract payload → abi-scan → pack → sign` (§6.1).
+- **Installer scripts never execute.** `.pkg` `preinstall`/`postinstall` scripts and `.dmg` autolaunch are ignored — the payload map is the entire install. A package whose function requires its scripts is rejected at review (DESIGN §13.1), not accommodated.
+- **Signer pinning is mandatory** for signed artifacts; `notarized` records the expectation (checked on 10.14+ where notarization exists). The verifier hard-fails on signer change: silent signer substitution upstream is how binary distribution gets owned. Unsigned vendor artifacts are allowed in extended with `signer` omitted, and are announced loudly at install (DESIGN §12.2).
+- **`redistribute` is required.** `true` → the farm repackages the payload as a hosted slice (best UX: atomic, resumable, rollback-able). `false` → every client fetches the vendor URL itself, hash- and signer-pinned; the index carries the formula but no blob. A mutated or pulled vendor artifact fails loudly at the hash check, never silently installs something else.
+- **Flavor doesn't apply.** `build_id` excludes `flavor` and `toolchain_id`; one slice serves every flavor. The ABI scan still runs on the payload at pack time — dependents link against vendor dylibs through the same ABI contract as farm-built libraries (DESIGN §7.3).
+- **OS tags are verified, not trusted.** At pack/repack time the declared `min_os`/`max_os` are checked against the bundle's `LSMinimumSystemVersion`, Mach-O minimum-version load commands, and the pkg Distribution's `allowed-os-versions` where present; disagreement is a lint error.
+- **Version normalization still applies** (§4) — vendor spellings like `3.2 Update 1` normalize per the rules, with the verbatim string preserved in `upstream_version`.
 
 ---
 
@@ -320,6 +391,8 @@ fetch → verify → unpack → patch → configure → build → install(stagin
 
 `fetch` is the only phase with network access. `abi-scan` is always run by aslice itself and cannot be skipped by a formula — the ABI contract is not optional metadata.
 
+For `type = "binary"` packages (§3.11) the pipeline compresses to `fetch → verify (hash + signer) → extract payload → abi-scan → pack → sign` — nothing is compiled, and embedded installer scripts are never executed. Extraction runs under the same no-network unpack sandbox profile as source archives (DESIGN §10.5).
+
 ### 6.2 Declarative builds
 
 `[build].system` covers the common cases with the system-idiomatic defaults: `configure`-with-prefix for autotools, out-of-tree `-DCMAKE_INSTALL_PREFIX` for cmake, `meson setup --prefix`, `cargo build --release` with `--locked` enforced (vendored or lockfile-pinned dependencies only — see §6.5), and so on. Per-phase overrides without going full `custom`:
@@ -354,7 +427,7 @@ Environment determinism is set by the builder, not the formula: `LC_ALL=C`, `TZ=
 
 ### 6.4 What the sandbox guarantees
 
-Restating the security-relevant invariants that this format relies on: no network after `fetch`; no writes outside the build dir; no reads of the host environment; no code execution at slice-install time; `tests.star` runs network-free unless the formula declares `test_network = true` (loudly logged).
+Restating the security-relevant invariants that this format relies on: no network after `fetch`; no writes outside the build dir; no reads of the host environment; no code execution at slice-install time — including vendor installer scripts, which are never run on any path (§3.11); `tests.star` runs network-free unless the formula declares `test_network = true` (loudly logged).
 
 ### 6.5 Language-ecosystem sub-managers
 
@@ -388,7 +461,7 @@ revision = 0
 build_id = "2f4a9c1e"
 flavor   = "v3"
 min_os   = "10.11"
-origin   = "slice"                     # slice | local-build
+origin   = "slice"                     # slice | local-build | vendor-direct
 variants = { x265 = true, debug = false }
 digest   = "sha256:9be4…"              # slice manifest digest (what was verified)
 
@@ -404,9 +477,13 @@ variants = {}
 digest   = "sha256:c001…"
 ```
 
+`origin` values: `slice` (prebuilt, hosted), `local-build` (compiled on this machine with recorded flags), `vendor-direct` (a `redistribute = false` vendor package whose artifact was fetched from the vendor URL; the lock records the artifact hash and pinned signer so a replay verifies against exactly what was installed).
+
 ### 7.3 Portability semantics — exact by default, intent-preserving across flavors
 
 A lock applied on a machine matching `machine.os`/`machine.flavor` reproduces **bit-identical build_ids** (verified against the same index snapshot or a newer one that still contains them). Applied on a *different* flavor or older OS, aslice re-resolves with the same versions and variants, swapping only build identities to the available flavor — and reports exactly what changed. Locks are thus exact where they can be and honest where they can't.
+
+For `type = "binary"` packages, cross-OS portability means re-selecting the right `[[binary]]` artifact for the target machine's OS (§3.11) — the version stays pinned, the artifact adapts, and the report says so.
 
 `--frozen` mode refuses any re-resolution: mismatch is an error, not an adaptation. That's the CI mode.
 
@@ -414,9 +491,9 @@ A lock applied on a machine matching `machine.os`/`machine.flavor` reproduces **
 
 ## 8. Validation and tooling
 
-- **`aslice lint <formula>`** — full schema validation plus policy checks (name rules, license validity, unpinned sources, submodule use, cycle detection, variant caps, `min_os` plausibility against the toolchain). Orchard CI runs lint + a sandboxed build on every PR (DESIGN §13.4).
+- **`aslice lint <formula>`** — full schema validation plus policy checks (name rules, license validity, unpinned sources, submodule use, cycle detection, variant caps, `min_os` plausibility against the toolchain; for `type = "binary"`: payload-map completeness against the actual artifact, signer/notarization verification, OS-tag consistency with bundle metadata). Orchard CI runs lint + a sandboxed build (or payload extraction) on every PR (DESIGN §13.4).
 - **`spec` evolution** — new format versions are additive-only within a `spec` major; readers reject higher `spec` values rather than guessing. Breaking changes bump `spec` and ship with a mechanical migrator.
-- **Unknown fields are errors** — including misplaced ones (`min_os` inside `[source]` fails lint, not silently ignored).
+- **Unknown fields are errors** — including misplaced ones (`min_os` inside `[source]` fails lint, not silently ignored; `[build]` on a `type = "binary"` package likewise).
 
 ---
 
@@ -476,6 +553,10 @@ A dependent says `runtime = ["blas ^3"]`; the profile's provider choice (`openbl
 
 See `orchards/core/ffmpeg/` in §2/§3: conditional deps, provider-variant requirements, variant caps, audit CPE, declarative service-free install. It is the reference formula the linter's test suite round-trips.
 
+### 9.5 Vendor binary — a pkg-only tool with a legacy artifact
+
+The full form is in §3.11. The shape to remember: **two `[[binary]]` artifacts** (the vendor's 10.11–10.13 legacy build and its 10.14+ current build), one shared signer pin, `redistribute = false` so clients fetch the vendor URL directly, and a `[[binary.payload]]` map that is the entire install. A machine on 10.12 gets the legacy artifact; a machine on 12 gets the current one; the solver never shows either machine the other's slice — and no installer script runs on either.
+
 ---
 
 ## Appendix. Field index
@@ -483,13 +564,14 @@ See `orchards/core/ffmpeg/` in §2/§3: conditional deps, provider-variant requi
 | Section | Fields |
 |---|---|
 | top-level | `spec` |
-| `[package]` | `name` `version` `revision` `epoch` `license` `description` `homepage` `documentation` `maintainers` `keywords` `tier` `min_os` `max_os` `flavors` `eol` `deprecated` |
+| `[package]` | `name` `version` `revision` `epoch` `license` `description` `homepage` `documentation` `maintainers` `keywords` `tier` `type` `min_os` `max_os` `flavors` `eol` `deprecated` |
 | `[[source]]` | `url` `git` `commit` `sha256` `mirrors` `into` `upstream_version` + `[source.pgp]` (`key_url`, `fingerprint`) |
 | `[[patch]]` | `file` `sha256` |
 | `[variants.*]` | `default` `abi` `description` `conflicts` `requires` `min_os` `flavors` |
 | `[depends]` | `runtime` `build` `test` — entries: `name [constraint] [+variant] [?condition]` |
 | interop | `provides` (map), `conflicts`, `replaces`, `aliases` |
-| `[install]` | `links_priority`, `[[install.data_dir]]`, `[[install.service]]`, `[install.completions]` |
+| `[install]` | `links_priority`, `[[install.data_dir]]`, `[[install.service]]`, `[install.completions]`, `notes` |
 | `[audit]` | `cpe`, `eol`, `eol_date` |
 | `[build]` | `system`, `args`, `skip_tests` |
-| lock file | `lock_version`, `generated_by`, `index_snapshot`, `[machine]`, `[[package]]` |
+| `[[binary]]` (type=binary) | `url` `sha256` `format` `min_os` `max_os` `arch` `signer` `notarized` `redistribute` + `[[binary.payload]]` (`from`, `to`) |
+| lock file | `lock_version`, `generated_by`, `index_snapshot`, `[machine]`, `[[package]]` (incl. `origin` = `slice` \| `local-build` \| `vendor-direct`) |

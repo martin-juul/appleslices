@@ -1,7 +1,7 @@
 # aslice vs Homebrew — Capability Review and Gap Analysis
 
-- **Status:** Review v0.1 — September 2026
-- **Companion to:** [DESIGN.md](DESIGN.md) v0.2, [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md) v0.1
+- **Status:** Review v0.2 — September 2026 (v0.2: vendor-binary packages supersede the cask deferral — §3.4, §5, §9 rows updated)
+- **Companion to:** [DESIGN.md](DESIGN.md) v0.5, [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md) v0.2
 - **Method:** aslice's two specifications compared feature-by-feature against Homebrew's living feature set as of Homebrew 7.0.0 (September 2026). Apple-Silicon-specific work and Homebrew's Intel deprecation/removal machinery are excluded per review scope; everything else Homebrew does today is fair game.
 - **Sources:** Homebrew release notes 4.6.0 → 7.0.0, docs.brew.sh (Security and Supply Chain, Tap Trust), Homebrew/brew issue #17019 (attestation verification). Links in §10.
 
@@ -113,7 +113,7 @@ Legend: ✅ spec covers it · ⚡ aslice is ahead · ⚠ partial / under-specifi
 | Analytics (opt-out) | ⚡ | **None, ever** — resolved decision (DESIGN §2.2 N7): aslice collects no telemetry or analytics of any kind, not even opt-in. The project is infrastructure, not a product |
 | formulae.brew.sh web index | ❌ | See §4.8 |
 | BrewUI native GUI (7.0) | ❌ | Acceptable to defer; note as opportunity for the retro-Mac community |
-| Casks (GUI apps/fonts) | ❌ deferred | Already N3/§12.4 — correct call; the declarative `.app` schema reservation stands |
+| Casks (GUI apps/fonts) | ⚠ partially superseded | Vendor-binary packages are **in scope** per the repository/vendor-binary decision (PACKAGE-FORMAT v0.2 §3.11, DESIGN §12.4): `.pkg`/`.dmg`-only software installs payload-only — installer scripts never execute — with pinned signers and per-artifact OS tags, hosted or vendor-fetched. What remains deferred is app *polish* (icon chrome, `~/Applications` integration), and the declarative `.app` schema reservation stands for that |
 
 ---
 
@@ -288,7 +288,7 @@ Semantics: **active → deprecated** (installs warn, `audit`/`info` surface it) 
 | Opt-out analytics | Rejected, absolutely | **No telemetry or analytics of any kind, ever — not even opt-in** (DESIGN §2.2 N7). The project is not a product; prebuild prioritization runs on dependency centrality, build pain, irreplaceability, and direct community requests — never on usage volume, which mismeasures value on a legacy platform where the rarest library may be the one nobody else ships |
 | HEAD builds in core | Rejected | Reproducibility and the lock model both depend on pins; third-party orchards may do what they like under their own trust level |
 | `/usr/local` ownership, sudo in steady state | Rejected (already) | — |
-| Casks at launch | Deferred (already N3) | The declarative `.app` reservation (§12.4) is the right shape when the time comes |
+| Casks at launch | Superseded in part; installer-script execution **rejected forever** | Vendor `.pkg`/`.dmg` software is now in scope via `type = "binary"` (§3.4 row above) — but aslice's cask equivalent is strictly payload-only extraction. Homebrew casks' ability to run `installer script:` blocks is a supply-chain hole aslice permanently rejects (DESIGN §10.1); the remaining deferral is GUI-app polish, and the declarative `.app` reservation (§12.4) is the right shape for it |
 | BrewUI-style native GUI | Defer | Wrong audience at launch; revisit when the orchard is deep — the index being clean, signed JSON makes a GUI an evening project later |
 
 ---
@@ -357,7 +357,7 @@ Worth stating explicitly, because a review that only adds things is suspicious:
 
 - **No architectural contradictions.** The variant/ABI model, the store/generation design, the flavor system, and the package format compose cleanly; nothing found in the Homebrew comparison invalidates a founding decision. (The closest call is the ABI scanner's `dlopen` blind spot — a limitation to engineer around, not a flaw in the model.)
 - **No security model regressions vs Homebrew 7.0.** Homebrew's recent additions (tap trust, attestations, install steps, vulns DB) each have an aslice equivalent that is same-or-stronger; the two genuine holes are about aslice itself (self-update, bootstrap trust), not about packages.
-- **No reason to expand scope.** Nothing in the comparison argues for Apple Silicon, macOS 13+, Linux, or casks at launch. Homebrew's breadth is precisely what aslice's scope discipline exists to avoid.
+- **No reason to expand scope.** Nothing in the comparison argues for Apple Silicon, macOS 13+, or Linux. Vendor `.pkg`/`.dmg` software entered scope by a separate decision (§3.4) — in the strict payload-only form — but cask-style GUI-app polish and installer-script execution stay out. Homebrew's breadth is precisely what aslice's scope discipline exists to avoid.
 
 ---
 
