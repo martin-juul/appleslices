@@ -17,7 +17,12 @@ A successor-in-spirit to Homebrew for the platform Homebrew is leaving behind:
 
 ## Status
 
-Design phase. See the [design document](docs/DESIGN.md).
+Design phase.
+
+## Documents
+
+- [Design document](docs/DESIGN.md) — architecture, platform matrix, distribution, security model, roadmap
+- [Package format specification](docs/PACKAGE-FORMAT.md) — `package.toml` schema, dependency semantics, versioning, lock files, build API
 
 ## Scope
 
