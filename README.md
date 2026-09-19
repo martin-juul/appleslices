@@ -6,7 +6,7 @@ A successor-in-spirit to Homebrew for the platform Homebrew is leaving behind:
 
 - **Prebuilt binaries ("slices")** for the common flavors (x86-64 baseline, SSE4.2, and AVX2 — the v1/v2/v3 flavors), hosted on GitHub with mirror-friendly fallback
 - **User-selectable build flags and variants** — compile your own without losing interoperability with the prebuilt world (ABI-aware substitution)
-- **Vendor binary packages & repositories** — software that only ships as `.pkg`/`.dmg` installed without ever running installer scripts; anyone can publish a signed, static repository
+- **Vendor binary packages & repositories** — software that only ships as `.pkg`/`.dmg` installed without ever running installer scripts, **including 32-bit and universal binaries** on 10.11–10.14 (the last macOS releases that run them); anyone can publish a signed, static repository
 - **A stronger security model** — declarative formulae, sandboxed builds, TUF-signed metadata, code-free binary installs, no sudo in steady state
 - **A stronger performance model** — single C++20 binary, sub-10ms startup, parallel solver and downloads, zstd payloads, atomic rollback-capable generations
 - **No telemetry, ever** — aslice collects no metrics or analytics of any kind; it is infrastructure, not a product
@@ -30,5 +30,5 @@ Design phase.
 
 ## Scope
 
-- macOS 10.11 through 12 — Intel x86_64 only (64-bit slices; no 32-bit/i386)
+- macOS 10.11 through 12 — Intel x86_64 only (aslice-built slices are 64-bit; 32-bit vendor payloads install on 10.11–10.14, the releases that still execute them)
 - No Apple Silicon, no macOS 13+ targets, by explicit design

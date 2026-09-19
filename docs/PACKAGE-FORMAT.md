@@ -1,7 +1,7 @@
 # aslice Package Format
 
-**Status:** Format draft, v0.2 — September 2026
-**Change log:** v0.2 adds **vendor binary packages** — `type = "binary"`, `[[binary]]` artifacts with per-OS support tags, declarative payload maps, and mandatory signer pinning (§3.11); lock-file `origin` gains `"vendor-direct"` (§7.2)
+**Status:** Format draft, v0.3 — September 2026
+**Change log:** v0.2 adds **vendor binary packages** — `type = "binary"`, `[[binary]]` artifacts with per-OS support tags, declarative payload maps, and mandatory signer pinning (§3.11); lock-file `origin` gains `"vendor-direct"` (§7.2). v0.3 opens **32-bit and universal vendor payloads**: `arch` may include `"i386"`, with the 10.14 execution ceiling derived from the artifact itself and enforced at lint and solve time (§3.11)
 **Companion to:** [DESIGN.md](DESIGN.md) — this document is the authoritative specification for §6 (Package Format). Where they disagree, this document wins.
 **Scope:** the `package.toml` definition format, `build.star` build API, dependency and version semantics, transitive resolution, and lock files.
 
@@ -249,9 +249,9 @@ sha256    = "aa11…"
 format    = "pkg"                       # pkg | dmg
 min_os    = "10.11"                     # artifact-level bounds; override [package] defaults
 max_os    = "10.13"                     # vendor's legacy build genuinely stops at 10.13
-arch      = ["x86_64"]
+arch      = ["x86_64", "i386"]          # universal; i386 present ⇒ max_os ≤ "10.14" (derived)
 signer    = "Developer ID Application: Vendor Inc. (ABCD1234)"   # pinned; change = hard fail
-notarized = true
+notarized = false                       # pre-notarization-era artifact; expected and announced
 redistribute = false                    # license forbids rehosting: clients fetch vendor URL
 
 [[binary]]                              # the vendor's current build, for newer machines
@@ -285,6 +285,10 @@ Rules:
 - **Installer scripts never execute.** `.pkg` `preinstall`/`postinstall` scripts and `.dmg` autolaunch are ignored — the payload map is the entire install. A package whose function requires its scripts is rejected at review (DESIGN §13.1), not accommodated.
 - **Signer pinning is mandatory** for signed artifacts; `notarized` records the expectation (checked on 10.14+ where notarization exists). The verifier hard-fails on signer change: silent signer substitution upstream is how binary distribution gets owned. Unsigned vendor artifacts are allowed in extended with `signer` omitted, and are announced loudly at install (DESIGN §12.2).
 - **`redistribute` is required.** `true` → the farm repackages the payload as a hosted slice (best UX: atomic, resumable, rollback-able). `false` → every client fetches the vendor URL itself, hash- and signer-pinned; the index carries the formula but no blob. A mutated or pulled vendor artifact fails loudly at the hash check, never silently installs something else.
+- **`arch` defaults to `["x86_64"]`** — aslice-built packages are x86_64-only, always (DESIGN §2.2 N6). Vendor payloads may additionally declare `"i386"` alone or universal `["x86_64", "i386"]`, because 32-bit code still executes on 10.11–10.14 and much of the pkg/dmg-only software worth having (audio plugins, lab instruments, frozen pro tools) ships that way.
+- **The 32-bit ceiling is derived, not declared.** macOS 10.15 removed 32-bit execution entirely. At pack/lint time the verifier inspects every Mach-O slice in the payload (lipo-style fat-header parsing); an artifact containing i386 code **must** declare `max_os = "10.14"` or lower, and the declared value is checked against what the binaries actually contain. Disagreement is a lint error; on 10.15+ machines the solver refuses with a clear "requires 32-bit support, removed in macOS 10.15" message.
+- **Universal payloads install whole.** `lipo -thin` extraction is forbidden: thinning a fat binary invalidates the vendor's code signature, and signer integrity outranks disk savings. The store receives the artifact exactly as signed.
+- **Pre-notarization-era artifacts are expected.** Software old enough to be 32-bit usually predates notarization (10.14+) and sometimes Developer ID signing entirely. `notarized = false` (or an omitted `signer`, extended tier only) is normal for these packages and is announced loudly at install, not blocked.
 - **Flavor doesn't apply.** `build_id` excludes `flavor` and `toolchain_id`; one slice serves every flavor. The ABI scan still runs on the payload at pack time — dependents link against vendor dylibs through the same ABI contract as farm-built libraries (DESIGN §7.3).
 - **OS tags are verified, not trusted.** At pack/repack time the declared `min_os`/`max_os` are checked against the bundle's `LSMinimumSystemVersion`, Mach-O minimum-version load commands, and the pkg Distribution's `allowed-os-versions` where present; disagreement is a lint error.
 - **Version normalization still applies** (§4) — vendor spellings like `3.2 Update 1` normalize per the rules, with the verbatim string preserved in `upstream_version`.
@@ -483,7 +487,7 @@ digest   = "sha256:c001…"
 
 A lock applied on a machine matching `machine.os`/`machine.flavor` reproduces **bit-identical build_ids** (verified against the same index snapshot or a newer one that still contains them). Applied on a *different* flavor or older OS, aslice re-resolves with the same versions and variants, swapping only build identities to the available flavor — and reports exactly what changed. Locks are thus exact where they can be and honest where they can't.
 
-For `type = "binary"` packages, cross-OS portability means re-selecting the right `[[binary]]` artifact for the target machine's OS (§3.11) — the version stays pinned, the artifact adapts, and the report says so.
+For `type = "binary"` packages, cross-OS portability means re-selecting the right `[[binary]]` artifact for the target machine's OS (§3.11) — the version stays pinned, the artifact adapts, and the report says so. When no artifact matches at all (e.g., an i386-only package whose lock is replayed on 10.15+), re-resolution fails with the reason spelled out — there is nothing to adapt to, and `--frozen` changes nothing.
 
 `--frozen` mode refuses any re-resolution: mismatch is an error, not an adaptation. That's the CI mode.
 
@@ -573,5 +577,5 @@ The full form is in §3.11. The shape to remember: **two `[[binary]]` artifacts*
 | `[install]` | `links_priority`, `[[install.data_dir]]`, `[[install.service]]`, `[install.completions]`, `notes` |
 | `[audit]` | `cpe`, `eol`, `eol_date` |
 | `[build]` | `system`, `args`, `skip_tests` |
-| `[[binary]]` (type=binary) | `url` `sha256` `format` `min_os` `max_os` `arch` `signer` `notarized` `redistribute` + `[[binary.payload]]` (`from`, `to`) |
+| `[[binary]]` (type=binary) | `url` `sha256` `format` `min_os` `max_os` `arch` (`x86_64` default; `i386` / universal allowed, i386 ⇒ `max_os ≤ 10.14`, derived) `signer` `notarized` `redistribute` + `[[binary.payload]]` (`from`, `to`) |
 | lock file | `lock_version`, `generated_by`, `index_snapshot`, `[machine]`, `[[package]]` (incl. `origin` = `slice` \| `local-build` \| `vendor-direct`) |

@@ -1,7 +1,7 @@
 # aslice vs Homebrew — Capability Review and Gap Analysis
 
-- **Status:** Review v0.2 — September 2026 (v0.2: vendor-binary packages supersede the cask deferral — §3.4, §5, §9 rows updated)
-- **Companion to:** [DESIGN.md](DESIGN.md) v0.5, [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md) v0.2
+- **Status:** Review v0.3 — September 2026 (v0.2: vendor-binary packages supersede the cask deferral — §3.4, §5, §9 rows updated; v0.3: 32-bit/universal vendor payloads on 10.11–10.14)
+- **Companion to:** [DESIGN.md](DESIGN.md) v0.6, [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md) v0.3
 - **Method:** aslice's two specifications compared feature-by-feature against Homebrew's living feature set as of Homebrew 7.0.0 (September 2026). Apple-Silicon-specific work and Homebrew's Intel deprecation/removal machinery are excluded per review scope; everything else Homebrew does today is fair game.
 - **Sources:** Homebrew release notes 4.6.0 → 7.0.0, docs.brew.sh (Security and Supply Chain, Tap Trust), Homebrew/brew issue #17019 (attestation verification). Links in §10.
 
@@ -113,7 +113,7 @@ Legend: ✅ spec covers it · ⚡ aslice is ahead · ⚠ partial / under-specifi
 | Analytics (opt-out) | ⚡ | **None, ever** — resolved decision (DESIGN §2.2 N7): aslice collects no telemetry or analytics of any kind, not even opt-in. The project is infrastructure, not a product |
 | formulae.brew.sh web index | ❌ | See §4.8 |
 | BrewUI native GUI (7.0) | ❌ | Acceptable to defer; note as opportunity for the retro-Mac community |
-| Casks (GUI apps/fonts) | ⚠ partially superseded | Vendor-binary packages are **in scope** per the repository/vendor-binary decision (PACKAGE-FORMAT v0.2 §3.11, DESIGN §12.4): `.pkg`/`.dmg`-only software installs payload-only — installer scripts never execute — with pinned signers and per-artifact OS tags, hosted or vendor-fetched. What remains deferred is app *polish* (icon chrome, `~/Applications` integration), and the declarative `.app` schema reservation stands for that |
+| Casks (GUI apps/fonts) | ⚠ partially superseded | Vendor-binary packages are **in scope** per the repository/vendor-binary decision (PACKAGE-FORMAT v0.2+ §3.11, DESIGN §12.4): `.pkg`/`.dmg`-only software installs payload-only — installer scripts never execute — with pinned signers and per-artifact OS/arch tags, **including 32-bit and universal payloads on 10.11–10.14** (the last releases that execute 32-bit code — a population Homebrew never served even at its peak), hosted or vendor-fetched. What remains deferred is app *polish* (icon chrome, `~/Applications` integration), and the declarative `.app` schema reservation stands for that |
 
 ---
 
