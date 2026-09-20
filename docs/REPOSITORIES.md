@@ -1,7 +1,7 @@
 # aslice Repositories — Sources, Trust Levels, and Signing Keys
 
-- **Status:** Design draft, v0.1 — September 2026
-- **Companion to:** [DESIGN.md](DESIGN.md) v0.8 (§9.6 repository system, §10.2 signatures), [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md) v0.3, [BUILD-INFRA.md](BUILD-INFRA.md) v0.1 (§9 result→repository)
+- **Status:** Design draft, v0.2 — September 2026 (v0.2: cross-repository overlap resolution with remembered decisions — §10; the state database's role — §11)
+- **Companion to:** [DESIGN.md](DESIGN.md) v0.9 (§8 store/state, §9.6 repository system, §10.2 signatures), [PACKAGE-FORMAT.md](PACKAGE-FORMAT.md) v0.3, [BUILD-INFRA.md](BUILD-INFRA.md) v0.1 (§9 result→repository)
 - **Scope:** the shipped official source list, adding third-party repositories, the inherent trust-level model, and the dual signature scheme (Ed25519 canonical, OpenPGP supported).
 
 ---
@@ -169,3 +169,97 @@ aslice repo list --sources-diff           # what the last source-list TUF update
 - **DESIGN §10.2:** the signature section now reads as dual-scheme — Ed25519/minisign canonical for official infrastructure, OpenPGP as a built-in first-class scheme for third-party repositories and formula-declared upstream verification.
 - **README:** vocabulary gains nothing (a repository is still a repository); the security bullet now mentions trust levels and dual signature schemes.
 - **Open question #6 (new, for reviewers):** should `verified` repos be installable-binary-capable immediately at enable time, or should enabling one additionally require a per-repo `--accept-binaries` step? Current answer: enable implies binaries (the countersignature is the vetting); the extra click was judged ceremony without security content. Review wanted.
+
+---
+
+## 10. Overlapping packages across repositories
+
+Namespaces make collisions *addressable* (`audiolab:convolver` vs `core:convolver`), but most users don't type namespaces — they type `aslice install convolver`. When more than one enabled repository serves the same bare package name, that bare name is **ambiguous**, and aslice never resolves ambiguity silently.
+
+### 10.1 When overlap is detected
+
+Overlap is computed at index-snapshot time, not at install time: after every repo metadata update, the client builds the set of package names served by more than one enabled repository. A name enters the overlap set when any two enabled repos serve it, regardless of version. Overlaps are classified:
+
+| Class | Meaning | Default posture |
+|---|---|---|
+| **shadow** | a non-official repo serves a name that core/extended also serves | core/extended wins automatically; the shadow is reported by `doctor` (DESIGN §9.6) — never prompted, never silently taken |
+| **peer overlap** | two non-official repos (`verified` or `third-party`) serve the same name | **prompt on first encounter** (§10.2) |
+| **version divergence** | same name, same repo preference, but the chosen repo's version is older than a loser's | noted in `--explain` output; no prompt — this is normal |
+
+Trust levels still dominate: a `third-party` repo can never shadow a `verified` one, and neither can shadow official. Prompts happen only between repos at the *same* effective level — that is where genuine ambiguity lives.
+
+### 10.2 The prompt
+
+```
+$ aslice install convolver
+The package "convolver" is provided by two repositories:
+
+  1. audiolab:convolver  2.3.1   (verified, enabled 2026-09-12)
+  2. plugins:convolver   2.4.0   (third-party, added 2026-09-18)
+
+Which repository should bare "convolver" resolve to?
+  [1] audiolab (recommended: higher trust level)
+  [2] plugins
+  [n] namespace-only — always require audiolab:convolver / plugins:convolver
+  [a] abort
+
+Choice [1]: 2
+Remember this decision? [Y/n/once]
+```
+
+- The prompt shows trust level, version, and provenance for each candidate — the decision inputs, not just names.
+- `[n]` (namespace-only) is a real choice: the user can declare that this bare name should *never* auto-resolve, forcing explicit namespaces forever. Some names deserve that.
+- Non-interactive contexts (scripts, `--json`, no TTY) never prompt: bare ambiguous names are a solve error with a machine-readable `ambiguous_name` code listing the candidates. Scripts must pin explicitly or pre-seed a decision (§10.4).
+
+### 10.3 Decisions are remembered — in the state database
+
+The answer is persisted in the client's SQLite state database (DESIGN §8.1, `db/state.sqlite`) in a dedicated table:
+
+```sql
+CREATE TABLE repo_resolutions (
+    name        TEXT NOT NULL,          -- bare package name
+    chosen_repo TEXT,                   -- namespace chosen, NULL for namespace-only
+    decided_at  TEXT NOT NULL,          -- ISO-8601
+    snapshot    TEXT NOT NULL,          -- index snapshot hash at decision time
+    reason      TEXT NOT NULL DEFAULT 'user-prompt',
+    PRIMARY KEY (name)
+);
+```
+
+Semantics of a stored decision:
+
+- **It survives upgrades, repo metadata refreshes, and reboots** — it is profile-independent machine state, like the repo key pins (§4) and the installed-set records.
+- **It is revalidated, not blindly trusted.** If the chosen repo is removed, disabled, demoted (§3), or stops serving the name, the decision lapses and the next encounter prompts again — with a line noting the expired decision and why. A decision never resurrects a repo the user removed.
+- **It is one level of indirection, not a lock.** `aslice install plugins:convolver` always bypasses the stored decision (explicit namespace wins); the decision only governs the *bare* name.
+- **New entrant invalidates.** If a third repo begins serving an already-decided name, the decision is *not* re-prompted by default (that way lies prompt fatigue) — but `aslice repo list --overlaps` and `doctor` show all current overlaps with their resolution state, and `aslice repo re-resolve convolver` re-opens the prompt on demand.
+- **Auditability.** `aslice repo resolutions` lists every stored decision with its timestamp and the snapshot it was made against; `aslice repo forget convolver` deletes one. Decisions are included in `--json` everywhere they apply.
+
+### 10.4 Pre-seeding and fleets
+
+Because decisions are rows in a documented table, they are scriptable without ever driving the interactive prompt:
+
+```
+aslice repo prefer convolver plugins            # insert/update a decision non-interactively
+aslice repo prefer convolver --namespace-only   # the [n] choice, scripted
+aslice repo prefer --import resolutions.json    # fleet/lab provisioning
+```
+
+A lab that images fifty machines writes its resolution policy once and distributes it — the same SQLite file, the same semantics as if a human had answered fifty prompts.
+
+## 11. The state database's role, stated plainly
+
+DESIGN §8.1 lists `db/state.sqlite` as "the only mutable state besides the store." This document makes the repository-facing half of that concrete. The database holds, and is the single source of truth for:
+
+| Table (indicative) | Contents | Written by |
+|---|---|---|
+| `installed` | installed set: build_id, origin, `on_request`, generation membership | install/uninstall/rollback |
+| `repo_pins` | per-repo pinned key fingerprints, scheme, trust level, TOFU timestamp | `repo add` / `re-pin` |
+| `repo_resolutions` | remembered overlap decisions (§10.3) | the prompt / `repo prefer` |
+| `solve_cache` | memoized resolutions keyed by index snapshot hash | the solver |
+| `history` | every mutating operation with timestamp and generation delta | every transaction |
+
+Properties the design relies on:
+
+- **WAL mode, prepared statements, single file** (DESIGN §5.2) — concurrent `aslice` processes serialize cleanly; a crash leaves the file consistent.
+- **Nothing in the DB is needed to *verify* anything.** Trust derives from signatures and pins re-checked against content; the DB records decisions and state. A deleted database loses the installed set record and remembered prompts (recoverable by rediscovery from the store and re-prompting) — it can never *weaken* verification, because verification never consults it for authority, only for pins that are themselves checked against live content.
+- **Inspectable.** `aslice db query` (read-only, schema-documented) exists precisely so power users and fleet tooling can see their own state. It's SQLite — the most inspectable database format in existence — on purpose.
