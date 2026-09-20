@@ -6,7 +6,7 @@ A successor-in-spirit to Homebrew for the platform Homebrew is leaving behind:
 
 - **Prebuilt binaries ("slices")** for the common flavors (x86-64 baseline, SSE4.2, and AVX2 — the v1/v2/v3 flavors), hosted on GitHub with mirror-friendly fallback
 - **User-selectable build flags and variants** — compile your own without losing interoperability with the prebuilt world (ABI-aware substitution)
-- **Vendor binary packages & repositories** — software that only ships as `.pkg`/`.dmg` installed without ever running installer scripts, **including 32-bit and universal binaries** on 10.11–10.14 (the last macOS releases that run them); anyone can publish a signed, static repository
+- **Vendor binary packages & repositories** — software that only ships as `.pkg`/`.dmg` installed without ever running installer scripts, **including 32-bit and universal binaries** on 10.11–10.14 (the last macOS releases that run them); anyone can publish a signed, static repository — ships with an official source list, inherent trust levels (official / verified / third-party / local), and both Ed25519 and OpenPGP (GPG) signature schemes
 - **A stronger security model** — declarative formulae, sandboxed builds, TUF-signed metadata, code-free binary installs, no sudo in steady state
 - **A stronger performance model** — single C++20 binary, sub-10ms startup, parallel solver and downloads, zstd payloads, atomic rollback-capable generations
 - **No telemetry, ever** — aslice collects no metrics or analytics of any kind; it is infrastructure, not a product
@@ -28,6 +28,7 @@ Design phase.
 - [Package format specification](docs/PACKAGE-FORMAT.md) — `package.toml` schema, dependency semantics, versioning, lock files, build API
 - [Homebrew comparison & gap review](docs/HOMEBREW-REVIEW.md) — feature-by-feature review against Homebrew 7.0, what's missing, and proposed spec amendments
 - [Build infrastructure](docs/BUILD-INFRA.md) — the build farm and the `aslice build` / `aslice farm` harness: one pipeline that runs identically on the farm and on any user's Mac
+- [Repositories](docs/REPOSITORIES.md) — the shipped official source list, inherent repository trust levels, and the dual Ed25519/OpenPGP signing model
 
 ## Scope
 
