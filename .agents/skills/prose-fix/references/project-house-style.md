@@ -1,6 +1,7 @@
 # House style: the aslice project (martin-juul/appleslices)
 
-These rules bind every prose-fix task in the aslice repository. They outrank the
+These rules apply to prose-fix tasks in the aslice repository, subject to the user's
+instructions and applicable repository instructions. They take precedence over the
 general author registers wherever the two disagree. The three register sheets
 (chen.md, knuth.md, stroustrup.md) describe *voice*; this file describes *the project*.
 
@@ -52,11 +53,11 @@ deviation in the review notes.
 - **Aphoristic lines may be kept deliberately** (precedent: the README rewrite).
   Keeping a gem is an active choice; note it.
 
-## 4. The rewrite doctrine (learned the hard way)
+## 4. Rewrite and preservation checks
 
-1. A rewrite is a paragraph-level rebuild in the assigned register. Tic-scanning —
-   swapping words, deleting em-dashes, splitting a few sentences — produced the
-   versions the user rejected twice. Do not repeat that failure.
+1. Rebuild weak paragraphs in the assigned register. Swapping words, deleting
+   em-dashes, or splitting sentences does not by itself repair an explanation.
+   Preserve effective passages and keep the extent of the edit within the request.
 2. **Every normative word count is a tripwire.** must / never / cannot / can't /
    always / only / required / shall are counted before and after; every delta must
    trace to a specific line and be either a documented force-preserving change
@@ -66,29 +67,31 @@ deviation in the review notes.
    ("otherwise never touches") — same words, new rule. Watch for it in your own
    output, not just the source's.
 3. **Every number, name, command, path, hash prefix, and inline-code token survives.**
-   The audit script enforces this; a clean audit is a precondition for delivery, not
-   a nicety.
+   The audit script reports some mechanical differences; it does not enforce this
+   requirement or prove equivalence. It always exits zero. Read every reported
+   difference and inspect the diff for altered facts, reference targets, and code
+   contents. Deliver only after unintended changes are fixed and intentional
+   differences are accounted for.
 4. Changelog wording convention for pure prose rewrites:
    "prose rewrite throughout — chapters reworded in the project's technical-writing
    voice; no <guidance|content|procedural> changes". Pick the noun the document's own
    history uses.
 
-## 5. Delivery rules (appleslices repo)
+## 5. Delivery in Codex
 
-- All writes go through the **GitHub MCP** (`create_or_update_file`) — never local
-  git, never API curl for writes. If the MCP tools are unloaded (session break),
-  reload them with `select_tools` before pushing. If the MCP server is down, stop
-  and say so; do not improvise another write path.
-- Before updating, fetch the current remote blob sha; compute the expected new blob
-  sha locally (`sha1("blob " + len + "\0" + content)`); push with full inline
-  content; **the returned blob sha must equal the computed one** — a mismatch means
-  transcription error, fix and retry.
-- After pushing, fetch the file back (raw URL or API) and byte-compare. Note that
-  raw.githubusercontent.com caches; a stale fetch-back is diagnosed by comparing its
-  blob sha to the push response, not by re-pushing.
-- Push strictly sequentially: one file, verify, next file.
-- Mirror verified files to the local staged tree and the output mirror per the
-  session's standing convention.
+- Edit the requested files in the current workspace, preserving existing user edits.
+  Audit against copies of the working files captured before the rewrite.
+- For changed documents with an existing version/history convention, update the
+  document version and append a prose-change entry. Historical text remains intact;
+  current version fields and new history entries are deliberate audit differences.
+  Do not create version metadata for unversioned files or change software versions.
+- Inspect the diff and run the preservation checks described in `../SKILL.md`, plus
+  repository-required documentation checks. A blank-line-only structural delta is
+  reviewable; changes to protected content require the user's requested scope to
+  include that content.
+- Leave edits local unless committing or publishing is already authorized. Follow
+  current repository instructions and use available tools for authorized delivery;
+  no particular MCP server or output mirror is required by this skill.
 
 ## 6. Review-only tasks
 
@@ -101,5 +104,6 @@ quote the worst tic lines verbatim, list lines worth keeping, and propose the re
 After a batch of documents, re-read each one end to end as a *reader*, not an editor:
 does any sentence sound like it was written to impress? Does any paragraph explain
 what the previous paragraph already said? Does any "never" appear where the policy is
-merely "does not"? Fix what you find, re-audit, and log the pass as its own changelog
-entry if it touched prose.
+merely "does not"? Fix what you find and re-audit. Include these changes in the
+current rewrite's history entry where the document uses one; a separate entry is
+needed only for a separate revision under that document's convention.
