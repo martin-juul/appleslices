@@ -9,7 +9,7 @@ general author registers wherever the two disagree. The three register sheets
 
 | Register | Documents |
 |---|---|
-| Chen | README.md, docs/MANUAL.md, docs/SETUP.md, docs/AUTHORING.md, docs/HOMEBREW-REVIEW.md |
+| Chen | README.md, docs/MANUAL.md, docs/SETUP.md, docs/AUTHORING.md |
 | Knuth | docs/runbooks/GENESIS.md, docs/runbooks/KEY-RUNBOOK.md |
 | Stroustrup | docs/DESIGN.md, docs/PACKAGE-FORMAT.md, docs/REPOSITORIES.md, docs/ORCHARD-POLICY.md, docs/BUILD-INFRA.md |
 | (mixed, see doc) | SECURITY.md, CONTRIBUTING.md — policy core in Stroustrup, how-to portions in Chen |
